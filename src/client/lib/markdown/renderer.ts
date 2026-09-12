@@ -9,6 +9,7 @@ import DOMPurify from 'dompurify';
 import { parseFrontMatter, slugifyHeading } from '@shared/markdown-utils';
 import { getLocale, t } from '../i18n';
 import { encodeDataValue } from './data-attr';
+import { mdcssPre, mdcssPost } from './mdcss-bridge.js';
 export interface Heading {
     level: number;
     text: string;
@@ -632,9 +633,9 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 });
 export function renderMarkdown(source: string): RenderResult {
     const env = emptyEnvironment();
-    const raw = md.render(stripObsidianComments(source), env);
-    const sanitized = DOMPurify.sanitize(raw, PURIFY_CONFIG);
-    const html = materializeTrustedTasks(sanitized, env.taskNonce);
+    const raw = md.render(mdcssPre(stripObsidianComments(source)), env);
+    const transformed = mdcssPost(DOMPurify.sanitize(raw, PURIFY_CONFIG));
+    const html = materializeTrustedTasks(transformed, env.taskNonce);
     return {
         html,
         headings: env.headings,
