@@ -271,7 +271,7 @@ function activatedNoteFields(state: UiState, id: string | null, pane: WorkspaceP
     recentNoteIds: id
       ? [id, ...state.recentNoteIds.filter((recentId) => recentId !== id)].slice(0, 24)
       : state.recentNoteIds,
-    mobilePane: id && revealOnMobile ? 'preview' : state.mobilePane,
+    mobilePane: id && revealOnMobile ? 'editor' : state.mobilePane,
   }
 }
 

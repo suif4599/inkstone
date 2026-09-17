@@ -124,6 +124,7 @@ export interface PreviewSettings {
   mermaid: boolean
   codeBlockCollapse: boolean
   codeBlockCollapseLines: number
+  mobileSourceEditor: boolean
 }
 
 export interface BackupSettings {
