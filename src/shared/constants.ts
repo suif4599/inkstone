@@ -88,6 +88,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
     mermaid: true,
     codeBlockCollapse: true,
     codeBlockCollapseLines: 24,
+    mobileSourceEditor: false,
   },
   backup: {
     schedule: 'sixHourly',
@@ -187,6 +188,7 @@ export function mergeSettings(partial: unknown): UserSettings {
   base.preview.math = booleanValue(preview.math, base.preview.math)
   base.preview.mermaid = booleanValue(preview.mermaid, base.preview.mermaid)
   base.preview.codeBlockCollapse = booleanValue(preview.codeBlockCollapse, base.preview.codeBlockCollapse)
+  base.preview.mobileSourceEditor = booleanValue(preview.mobileSourceEditor, base.preview.mobileSourceEditor)
   base.preview.codeBlockCollapseLines = integerInRange(
     preview.codeBlockCollapseLines,
     8,

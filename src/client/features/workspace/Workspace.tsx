@@ -425,7 +425,7 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
 
       <div ref={containerRef} className={cn("flex min-h-0 flex-1", isMobile && "flex-col")} data-editor-layout={layout}>
         <div hidden={!showEditor} inert={!showEditor} className="min-h-0 min-w-0" style={{ width: layout === 'split' && !isMobile ? editorWidth : outlineVisible ? `calc(100% - ${OUTLINE_WIDTH}px)` : '100%', flex: isMobile ? 1 : undefined }}>
-            <DeferredCodeEditor key={note.id} visible={showEditor} value={content} noteTitle={note.title} live={layout === 'live'} onHeadings={setHeadings} onChange={onChange} settings={settings.editor} sources={sources} handlers={handlers} onReady={setView}/>
+            <DeferredCodeEditor key={note.id} visible={showEditor} value={content} noteTitle={note.title} live={layout === 'live' && !(isMobile && settings.preview.mobileSourceEditor)} onHeadings={setHeadings} onChange={onChange} settings={settings.editor} sources={sources} handlers={handlers} onReady={setView}/>
           </div>
 
         {layout === 'split' && !isMobile && (<SplitResizer label={t("workspace.resize_editor_and_preview_panes")} containerRef={containerRef} ratio={effectiveSplitRatio} onChange={(splitRatio) => setLayout({ splitRatio })} onReset={() => setLayout({ splitRatio: null })}/>)}
