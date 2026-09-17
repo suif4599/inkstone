@@ -718,6 +718,8 @@ export const ZH_CN_MESSAGES = {
     "settings.mcp_write_access": "允许修改笔记库",
     "settings.mcp_write_access_desc": "可修改笔记、目录、标签、属性和附件，也可创建共享链接或运行已配置的备份；写入带有冲突保护和幂等操作 ID。",
     "settings.math": "数学公式",
+    "settings.mobile_source_editing": "移动端源码编辑",
+    "settings.mobile_source_editing_description": "移动端编辑页始终显示 Markdown 源码，而非实时渲染",
     "settings.monospace": "等宽",
     "settings.name": "名称",
     "settings.name_based_avatar": "根据显示名称生成",

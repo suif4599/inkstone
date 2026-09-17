@@ -70,6 +70,10 @@ export function EditorSettings() {
         <SettingRow title={t("settings.show_outline_by_default")}>
           <Switch checked={preview.showToc} onChange={(showToc) => void update({ preview: { showToc } })} label={t("settings.show_outline_by_default")}/>
         </SettingRow>
+
+        <SettingRow title={t("settings.mobile_source_editing")} description={t("settings.mobile_source_editing_description")}>
+          <Switch checked={preview.mobileSourceEditor} onChange={(mobileSourceEditor) => void update({ preview: { mobileSourceEditor } })} label={t("settings.mobile_source_editing")}/>
+        </SettingRow>
       </section>
 
       <section>

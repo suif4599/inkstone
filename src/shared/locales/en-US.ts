@@ -717,6 +717,8 @@ export const EN_US_MESSAGES = {
     "settings.mcp_write_access": "Allow modifying the note library",
     "settings.mcp_write_access_desc": "May modify notes, folders, tags, properties, and attachments, and may create shares or run configured backups. Writes use conflict protection and stable operation IDs.",
     "settings.math": "Math",
+    "settings.mobile_source_editing": "Mobile source editing",
+    "settings.mobile_source_editing_description": "Always show raw Markdown instead of live preview in the mobile editor",
     "settings.monospace": "Monospace",
     "settings.name": "Name",
     "settings.name_based_avatar": "Based on your display name",
