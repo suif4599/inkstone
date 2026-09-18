@@ -51,6 +51,10 @@ ${markdown}
       return `${__MDCSS_FENCE_TOKEN_PREFIX__}${index}${__MDCSS_FENCE_TOKEN_SUFFIX__}`;
     }
   );
+  markdown = markdown.replace(
+    /(^|\n)([ \t]{0,3})table<(auto|zebra|nozebra)>:/gi,
+    (_match, newline, indentText, mode) => `${newline}${indentText}Table@${mode.toLowerCase()}@:`
+  );
 
   function roman(num, prefix) {
     if (typeof num !== 'number' || num < 1 || num > 3999) {
@@ -622,6 +626,74 @@ export function mdcssPost(html) {
   html = html.replace(rm_th_regex, '');
   const esc_th_regex = /<th([^>]*)>\\\\<\/th>/g;
   html = html.replace(esc_th_regex, '<th$1>\\</th>');
+
+  const MDCSS_ZEBRA_TAG_RE = /(<p[^>]*>)\s*Table@(auto|zebra|nozebra)@:\s*(.*?)<\/p>\s*(<div(?![^>]*data-mdcss-col)[^>]*>\s*<table[\s\S]*?<\/table>\s*<\/div>|<table[\s\S]*?<\/table>)/g;
+
+  function zebraMergeClass(attrs, cls) {
+    const classMatch = attrs.match(/\sclass="([^"]*)"/);
+    if (classMatch) {
+      const merged = classMatch[1] ? `${classMatch[1]} ${cls}` : cls;
+      return attrs.replace(classMatch[0], ` class="${merged}"`);
+    }
+    return ` class="${cls}"${attrs}`;
+  }
+
+  function zebraApplyBands(tablePart) {
+    const tbodyMatch = tablePart.match(/(<tbody[^>]*>)([\s\S]*?)(<\/tbody>)/);
+    if (!tbodyMatch) return tablePart;
+    const rows = tbodyMatch[2].match(/<tr[^>]*>[\s\S]*?<\/tr>/g);
+    if (!rows) return tablePart;
+    const parent = [];
+    for (let i = 0; i < rows.length; i += 1) parent.push(i);
+    const find = (x) => {
+      while (parent[x] !== x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+      }
+      return x;
+    };
+    rows.forEach((row, i) => {
+      (row.match(/<t[dh][^>]*>/g) || []).forEach((tag) => {
+        const spanMatch = tag.match(/rowspan="(\d+)"/);
+        if (!spanMatch) return;
+        const end = Math.min(i + parseInt(spanMatch[1], 10) - 1, rows.length - 1);
+        for (let k = i + 1; k <= end; k += 1) {
+          const ra = find(i);
+          const rb = find(k);
+          if (ra !== rb) {
+            if (ra < rb) parent[rb] = ra;
+            else parent[ra] = rb;
+          }
+        }
+      });
+    });
+    const bandOf = new Map();
+    const rowBand = [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const root = find(i);
+      if (!bandOf.has(root)) bandOf.set(root, bandOf.size);
+      rowBand.push(bandOf.get(root));
+    }
+    let rowIndex = 0;
+    const striped = tbodyMatch[2].replace(/<tr[^>]*>[\s\S]*?<\/tr>/g, (row) => {
+      const band = rowBand[rowIndex];
+      rowIndex += 1;
+      if (band % 2 !== 1) return row;
+      return row.replace(/<tr([^>]*)>/, (_t, attrs) => `<tr${zebraMergeClass(attrs, 'mdcss-z')}>`);
+    });
+    return tablePart.replace(tbodyMatch[0], () => tbodyMatch[1] + striped + tbodyMatch[3]);
+  }
+
+  html = html.replace(MDCSS_ZEBRA_TAG_RE, (_match, pOpen, mode, caption, tablePart) => {
+    let out = tablePart.replace(/<table([^>]*)>/, (_t, attrs) => `<table${zebraMergeClass(attrs, `mdcss-${mode}`)}>`);
+    if (mode === 'auto') out = zebraApplyBands(out);
+    return `${pOpen}Table: ${caption}</p>\n${out}`;
+  });
+
+  html = html.replace(
+    /<table(?![^>]*mdcss-(?:auto|zebra|nozebra))([^>]*)>([\s\S]*?)<\/table>/g,
+    (_match, attrs, body) => zebraApplyBands(`<table${zebraMergeClass(attrs, 'mdcss-auto')}>${body}</table>`)
+  );
 
   html = html.replace(
     /<p[^>]*>\s*Table:\s*(.*?)<\/p>\s*(<div(?![^>]*data-mdcss-col)[^>]*>\s*<table[\s\S]*?<\/table>\s*<\/div>|<table[\s\S]*?<\/table>)/gi,
