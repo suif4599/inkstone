@@ -691,9 +691,11 @@
 
 
 .ink-prose .table-wrap {
-  margin: 0.9em 0;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0.9em auto;
   overflow-x: auto;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-default);
   border-radius: var(--r-md);
 }
 .ink-prose table {
@@ -713,14 +715,24 @@
 .ink-prose th,
 .ink-prose td {
   padding: 0.4em 0.7em;
-  border-bottom: 1px solid var(--border-subtle);
+  /* unconditional right/bottom lines: :last-child exemptions break under
+     rowspan (a row shortened by merged cells is not the grid's last column);
+     border-collapse merges shared inner edges so only the table-frame sides
+     meet the wrapper border */
+  border-bottom: 2px solid var(--border-subtle);
+  border-right: 2px solid var(--border-subtle);
   vertical-align: top;
-}
-.ink-prose tbody tr:last-child td {
-  border-bottom: none;
 }
 .ink-prose tbody tr {
   transition: background-color var(--dur-fast) var(--ease-out);
+}
+/* band hover: light up the whole rowspan band (rows sharing one stripe),
+   not just the physical row; see lib/markdown/table-bands.ts. The doubled
+   class outranks the generated mdcss stripe rules, which tie on
+   specificity but are imported later. */
+.ink-prose table.mdcss-auto tbody tr.tbl-band-hover.tbl-band-hover,
+.ink-prose table.mdcss-auto tbody tr.tbl-band-hover.tbl-band-hover.mdcss-z {
+  background: var(--bg-hover);
 }
 .ink-prose tbody tr:hover {
   background: var(--bg-hover);
@@ -806,6 +818,11 @@
   text-align: center;
   font-size: 0.82em;
   color: var(--text-tertiary);
+}
+/* mdcss table captions sit one step brighter than image captions but stay
+   dimmer than body text */
+.ink-prose figure:has(.table-wrap) figcaption {
+  color: var(--text-secondary);
 }
 
 

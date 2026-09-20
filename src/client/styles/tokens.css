@@ -71,6 +71,8 @@
   --bg-inset: oklch(14% 0.008 265);
   --bg-hover: oklch(100% 0 0 / 4.5%);
   --bg-active: oklch(100% 0 0 / 8%);
+  --tbl-stripe: oklch(28% 0.008 75);
+  --tbl-bg: oklch(18% 0.008 75);
 
   --border-subtle: oklch(100% 0 0 / 6%);
   --border-default: oklch(100% 0 0 / 10%);
@@ -125,6 +127,8 @@
   --bg-inset: oklch(96.8% 0.005 90);
   --bg-hover: oklch(20% 0.01 265 / 4%);
   --bg-active: oklch(20% 0.01 265 / 7%);
+  --tbl-stripe: oklch(94.5% 0.005 90);
+  --tbl-bg: #ffffff;
 
   --border-subtle: oklch(20% 0.01 265 / 7%);
   --border-default: oklch(20% 0.01 265 / 11%);
@@ -173,6 +177,8 @@
   --bg-raised: #ffffff;
   --bg-overlay: #ffffff;
   --bg-inset: #f4f5f6;
+  --tbl-stripe: oklch(94.8% 0.003 265);
+  --tbl-bg: #ffffff;
 }
 
 :root[data-theme='dark'][data-background='white'] {
@@ -183,6 +189,8 @@
   --bg-raised: #252629;
   --bg-overlay: #292a2d;
   --bg-inset: #111214;
+  --tbl-stripe: oklch(28% 0.005 265);
+  --tbl-bg: oklch(19% 0.005 265);
 }
 
 

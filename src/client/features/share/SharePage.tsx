@@ -7,6 +7,7 @@ import { fullTime } from '../../lib/time';
 import { readingMinutes, countText } from '@shared/markdown-utils';
 import { renderMarkdown } from '../../lib/markdown/renderer';
 import { enhancePreview, renderPendingMermaid, resetMermaidNode, toggleCodeBlockCollapse } from '../../lib/markdown/enhance';
+import { applyTableBands, onTableBandOver, onTableBandOut } from '../../lib/markdown/table-bands';
 import { Avatar, Button, Logo } from '../../components/primitives';
 import { Input } from '../../components/form';
 import { LoadingBlock } from '../../components/feedback';
@@ -103,6 +104,7 @@ export function SharePage({ slug }: {
         const isCurrent = () => !cancelled && enhancementRevisionRef.current === revision && hostRef.current === host;
         void (async () => {
             await enhancePreview(host, { math: true, mermaid: true, dark, codeBlockCollapseLines: 24 });
+            applyTableBands(host);
             if (!isCurrent())
                 return;
             await renderPendingMermaid(host, dark, { isCurrent });
@@ -241,7 +243,7 @@ export function SharePage({ slug }: {
               </div>
             </header>
 
-            <div ref={hostRef} onClick={onContentClick} onKeyDown={onContentKeyDown} className="ink-prose" style={{ maxWidth: 'none' }} dangerouslySetInnerHTML={htmlObj}/>
+            <div ref={hostRef} onClick={onContentClick} onKeyDown={onContentKeyDown} onMouseOver={onTableBandOver} onMouseOut={onTableBandOut} className="ink-prose" style={{ maxWidth: 'none' }} dangerouslySetInnerHTML={htmlObj}/>
 
             <footer className="mt-16 border-t border-[var(--border-subtle)] pt-6 text-center">
               <a href="/" className="inline-flex items-center gap-1.5 text-[11.5px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--accent)]">

@@ -14,6 +14,7 @@ import { useDebounced } from '../../lib/hooks'
 import { decodeDataValue } from '../../lib/markdown/data-attr'
 import { parseWikiTarget, renderMarkdown, type Heading } from '../../lib/markdown/renderer'
 import { resolveNoteEmbeds } from '../../lib/markdown/embeds'
+import { applyTableBands, onTableBandOver, onTableBandOut } from '../../lib/markdown/table-bands'
 import { t, useLocale } from '../../lib/i18n'
 import { slugifyHeading } from '@shared/markdown-utils'
 import {
@@ -154,6 +155,7 @@ export const Preview = memo(function Preview({
           ? settings.preview.codeBlockCollapseLines
           : 0,
       })
+      applyTableBands(staging)
       if (cancelled || revision !== preparationRef.current) return
 
       restorePreviewInteractionState(staging, capturePreviewInteractionState(hostRef.current))
@@ -384,6 +386,8 @@ export const Preview = memo(function Preview({
         ref={hostRef}
         onClick={onClick}
         onKeyDown={onKeyDown}
+        onMouseOver={onTableBandOver}
+        onMouseOut={onTableBandOut}
         data-font={settings.appearance.proseFont}
         data-preview-content
         className="ink-prose"
