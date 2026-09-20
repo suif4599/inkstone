@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { KeyRound, Lock, Moon, Sun } from 'lucide-react';
+import { KeyRound, ListTree, Lock, Moon, Sun } from 'lucide-react';
 import { LIMITS } from '@shared/constants';
 import type { PublicNote } from '@shared/types';
 import { api, ApiError } from '../../lib/api';
 import { fullTime } from '../../lib/time';
 import { readingMinutes, countText } from '@shared/markdown-utils';
-import { renderMarkdown } from '../../lib/markdown/renderer';
+import { renderMarkdown, type Heading } from '../../lib/markdown/renderer';
 import { enhancePreview, renderPendingMermaid, resetMermaidNode, toggleCodeBlockCollapse } from '../../lib/markdown/enhance';
 import { applyTableBands, onTableBandOver, onTableBandOut } from '../../lib/markdown/table-bands';
 import { Avatar, Button, Logo } from '../../components/primitives';
 import { Input } from '../../components/form';
 import { LoadingBlock } from '../../components/feedback';
-import { Tooltip } from '../../components/overlay';
+import { Drawer, Tooltip } from '../../components/overlay';
 import { useUi } from '../../store/ui';
+import { useMediaQuery } from '../../lib/hooks';
+import { preferredScrollBehavior } from '../../lib/motion';
 import { moveMarkdownTabFocus, selectMarkdownTab } from '../preview/markdown-tabs';
+import { Outline } from '../preview/Outline';
 import { t, useLocale } from "../../lib/i18n";
 
 export function SharePage({ slug }: {
@@ -26,7 +29,10 @@ export function SharePage({ slug }: {
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [dark, setDark] = useState(() => document.documentElement.dataset.theme === 'dark');
+    const [outlineOpen, setOutlineOpen] = useState(false);
     const toast = useUi((s) => s.toast);
+    const wide = useMediaQuery('(min-width: 1320px)');
+    const scrollRef = useRef<HTMLDivElement>(null);
     const hostRef = useRef<HTMLDivElement>(null);
     const requestRef = useRef<AbortController | null>(null);
     const enhancementRevisionRef = useRef(0);
@@ -76,6 +82,7 @@ export function SharePage({ slug }: {
         setNeedPassword(false);
         setPassword('');
         setError(null);
+        setOutlineOpen(false);
         void load();
         return () => {
             requestRef.current?.abort();
@@ -95,6 +102,11 @@ export function SharePage({ slug }: {
         };
     }, [note, locale]);
     const htmlObj = useMemo(() => ({ __html: rendered?.html ?? '' }), [rendered]);
+    const headings = rendered?.headings ?? [];
+    const jumpToHeading = useCallback((heading: Heading) => {
+        hostRef.current?.querySelector<HTMLElement>(`#${CSS.escape(heading.slug)}`)
+            ?.scrollIntoView({ behavior: preferredScrollBehavior(), block: 'start' });
+    }, []);
     useEffect(() => {
         if (!rendered || !hostRef.current)
             return;
@@ -184,7 +196,7 @@ export function SharePage({ slug }: {
         document.documentElement.dataset.theme = next ? 'dark' : 'light';
     };
     const stats = note ? countText(note.content) : null;
-    return (<div className="h-full overflow-y-auto overscroll-contain bg-[var(--bg-base)]">
+    return (<div ref={scrollRef} className="h-full overflow-y-auto overscroll-contain bg-[var(--bg-base)]">
       <header className="sticky top-0 z-10 border-b border-[var(--border-subtle)] bg-[var(--bg-base)]/85 pt-[env(safe-area-inset-top)] backdrop-blur">
         <div className="mx-auto flex h-12 max-w-[860px] items-center gap-3 px-4 md:px-5">
           <span className="flex items-center gap-1.5 text-[var(--accent)]">
@@ -194,6 +206,11 @@ export function SharePage({ slug }: {
             {note?.site.name ?? 'Inkstone'}
           </span>
           <span className="flex-1"/>
+          {!wide && headings.length > 0 && (<Tooltip label={t("common.outline")} side="left">
+              <button type="button" onClick={() => setOutlineOpen(true)} aria-label={t("common.outline")} className="inline-flex size-9 items-center justify-center rounded-[var(--r-md)] text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] md:size-7">
+                <ListTree size={14}/>
+              </button>
+            </Tooltip>)}
           <Tooltip label={t("share.switch_theme")} side="left">
             <button type="button" onClick={toggleTheme} aria-label={t("share.switch_theme")} className="inline-flex size-9 items-center justify-center rounded-[var(--r-md)] text-[var(--text-tertiary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] md:size-7">
               {dark ? <Sun size={14}/> : <Moon size={14}/>}
@@ -243,7 +260,7 @@ export function SharePage({ slug }: {
               </div>
             </header>
 
-            <div ref={hostRef} onClick={onContentClick} onKeyDown={onContentKeyDown} onMouseOver={onTableBandOver} onMouseOut={onTableBandOut} className="ink-prose" style={{ maxWidth: 'none' }} dangerouslySetInnerHTML={htmlObj}/>
+            <div ref={hostRef} onClick={onContentClick} onKeyDown={onContentKeyDown} onMouseOver={onTableBandOver} onMouseOut={onTableBandOut} className="ink-prose share-prose" style={{ maxWidth: 'none' }} dangerouslySetInnerHTML={htmlObj}/>
 
             <footer className="mt-16 border-t border-[var(--border-subtle)] pt-6 text-center">
               <a href="/" className="inline-flex items-center gap-1.5 text-[11.5px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--accent)]">
@@ -251,6 +268,15 @@ export function SharePage({ slug }: {
             </footer>
           </article>) : null}
       </main>
+
+      {headings.length > 0 && (wide ? (<div className="fixed top-[calc(env(safe-area-inset-top)+60px)] right-[max(24px,calc(50%_-_650px))] bottom-8 w-[180px] overflow-y-auto overscroll-contain">
+          <Outline headings={headings} onSelect={jumpToHeading} scrollerRef={scrollRef} className="w-full py-1 pr-0"/>
+        </div>) : (<Drawer open={outlineOpen} onClose={() => setOutlineOpen(false)} side="right" width={320} title={t("common.outline")}>
+          <Outline headings={headings} scrollerRef={scrollRef} className="max-h-none w-full self-stretch py-3" onSelect={(heading) => {
+                jumpToHeading(heading);
+                setOutlineOpen(false);
+            }}/>
+        </Drawer>))}
     </div>);
 }
 function addShareAccess(html: string, slug: string): string {
