@@ -47,6 +47,15 @@
 .ink-prose > h3:first-child {
   margin-top: 0;
 }
+/* Shared-note pages keep a sticky bar above the prose; heading jumps must clear it. */
+.ink-prose.share-prose h1,
+.ink-prose.share-prose h2,
+.ink-prose.share-prose h3,
+.ink-prose.share-prose h4,
+.ink-prose.share-prose h5,
+.ink-prose.share-prose h6 {
+  scroll-margin-top: calc(env(safe-area-inset-top) + 60px);
+}
 .ink-prose h1 {
   font-size: var(--heading-1-size, 1.52em);
   font-weight: 650;
