@@ -101,7 +101,7 @@ scripts/      仓库检查与端到端验证脚本
 tests/        跨模块回归测试
 ```
 
-`src/client/` 下的 `lib/markdown/mdcss-bridge.js` 与 `styles/mdcss.css` 两个文件由 [mdcss](https://github.com/suif4599/mdcss) 生成，请勿手工修改；需要变更时请在 mdcss 仓库中重新生成。
+`src/client/` 下的 `lib/markdown/mdcss-bridge.js`、`lib/markdown/mdcss-runtime.js`（含 `mdcss-runtime.d.ts`）与 `styles/mdcss.css` 三个文件由 [mdcss](https://github.com/suif4599/mdcss) 生成，请勿手工修改；需要变更时请在 mdcss 仓库中重新生成。
 
 ## 安全与参与开发
 

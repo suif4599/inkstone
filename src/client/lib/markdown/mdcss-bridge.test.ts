@@ -21,6 +21,23 @@ describe('mdcss bridge rendering', () => {
     expect(html).toContain('mdcss-inv')
   })
 
+  it('applies runtime effect classes with per-image bounds', () => {
+    const { html } = renderMarkdown('![40%I(10,253)|.caption|alt](a.png)')
+    expect(html).toContain('mdcss-bright-10-253')
+    expect(html).toContain('alt="alt"')
+  })
+
+  it('maps M to the matte class', () => {
+    const { html } = renderMarkdown('![50%M](a.png)')
+    expect(html).toContain('mdcss-matte')
+  })
+
+  it('falls back to the bare effect class for invalid bounds', () => {
+    const { html } = renderMarkdown('![50%I(300,400)](a.png)')
+    expect(html).toContain('mdcss-bright')
+    expect(html).not.toContain('mdcss-bright-300')
+  })
+
   it('groups row images with subfigure labels', () => {
     const { html } = renderMarkdown('![25%r|.a](a.png) ![25%r|.b](b.png)')
     expect(html).toContain('mdcss-fig-group')
@@ -60,9 +77,9 @@ describe('mdcss bridge rendering', () => {
     expect(html).toContain('<p data-line="10">after</p>')
   })
 
-  it('appends the invert-brightness filter definition once', () => {
+  it('leaves no invert-brightness filter definition', () => {
     const { html } = renderMarkdown('# plain')
-    expect(html.match(/id="invert-brightness"/g)).toHaveLength(1)
+    expect(html).not.toContain('invert-brightness')
   })
 
   it('wraps indented documents', () => {
