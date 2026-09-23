@@ -4,13 +4,13 @@ import { mergeSettings } from '@shared/constants';
 
 describe('live preview Markdown compatibility', () => {
     it('migrates old layouts while preserving split and unrelated settings', () => {
-        for (const layout of ['edit', 'live']) {
+        for (const layout of ['edit', 'split']) {
             const settings = mergeSettings({ preview: { layout, math: false }, editor: { tabSize: 4 } });
-            expect(settings.preview.layout).toBe('live');
+            expect(settings.preview.layout).toBe('split');
             expect(settings.preview.math).toBe(false);
             expect(settings.editor.tabSize).toBe(4);
         }
-        for (const layout of ['split', 'preview']) expect(mergeSettings({ preview: { layout } }).preview.layout).toBe(layout);
+        for (const layout of ['live', 'preview']) expect(mergeSettings({ preview: { layout } }).preview.layout).toBe(layout);
     });
     it('retains document-wide references and source lines across nested blocks', () => {
         const source = '# Heading\n\n[Reference][ref]\n\n- [ ] one\n  - [x] two\n\n| A | B |\n| - | - |\n| C | D |\n\n[ref]: https://example.com';

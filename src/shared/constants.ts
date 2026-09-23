@@ -81,7 +81,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
     autoSaveDelay: 500,
   },
   preview: {
-    layout: 'live',
+    layout: 'split',
     syncScroll: true,
     showToc: true,
     math: true,
