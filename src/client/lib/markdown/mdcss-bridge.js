@@ -420,7 +420,7 @@ ${markdown}
 }
 
 export function mdcssPost(html) {
-  const MDCSS_CONTROL_RE = /^(\d{1,4})(%|px)?(Lf|Rf|r|L|R)?(i|I|m)?$/;
+  const MDCSS_CONTROL_RE = /^(\d{1,4})(%|px)?(Lf|Rf|r|L|R)?(i|I|m|M)?(?:\((\d{1,3}),(\d{1,3})\))?$/;
   const MDCSS_LAYOUT_CLASS = {
     r: 'mdcss-row',
     L: 'mdcss-left',
@@ -432,6 +432,7 @@ export function mdcssPost(html) {
     i: 'mdcss-inv',
     I: 'mdcss-bright',
     m: 'mdcss-mix',
+    M: 'mdcss-matte',
   };
 
   function parseImageAlt(alt) {
@@ -443,11 +444,23 @@ export function mdcssPost(html) {
       match = control.match(MDCSS_CONTROL_RE);
       if (!match || Number(match[1]) <= 0) return null;
     }
+    let lo = null;
+    let hi = null;
+    if (match && match[5] !== undefined) {
+      const a = Number(match[5]);
+      const b = Number(match[6]);
+      if (0 <= a && a < b && b <= 255) {
+        lo = a;
+        hi = b;
+      }
+    }
     return {
       width: match ? Number(match[1]) : null,
       unit: match ? (match[2] || '%') : null,
       layout: match ? (match[3] || null) : null,
       effect: match ? (match[4] || null) : null,
+      effectLo: lo,
+      effectHi: hi,
       caption: (parts[1] || '').trim(),
       realAlt: parts.slice(2).join('|').trim(),
     };
@@ -536,7 +549,13 @@ export function mdcssPost(html) {
     const widthValue = widthValueOf(parsed);
     const classes = [];
     if (parsed.layout) classes.push(MDCSS_LAYOUT_CLASS[parsed.layout]);
-    if (parsed.effect) classes.push(MDCSS_EFFECT_CLASS[parsed.effect]);
+    if (parsed.effect) {
+      if (parsed.effectLo !== null) {
+        classes.push(`${MDCSS_EFFECT_CLASS[parsed.effect]}-${parsed.effectLo}-${parsed.effectHi}`);
+      } else {
+        classes.push(MDCSS_EFFECT_CLASS[parsed.effect]);
+      }
+    }
     if (widthValue === null && !parsed.caption) return imgTag;
 
     let tag = imgTag;
@@ -866,32 +885,6 @@ ${generalCaption || ''}
     (match, role, align) =>
     `<div style="display: flex; flex-direction: column; justify-content: ${align || "flex-start"}; min-width: 0; max-width: 100%;" data-mdcss-col="${role}"${align ? ` data-mdcss-col-align="${align}"` : ""}>`
   );
-  if (!html.includes('id="invert-brightness"')) {
-    html += `
-
-<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position: absolute; visibility: hidden;">
-  <defs>
-    <filter id="invert-brightness" color-interpolation-filters="sRGB">
-      <feColorMatrix type="matrix" values="
-        0.299   0.587   0.114   0  0
-       -0.147  -0.289   0.436   0  0
-        0.615  -0.515  -0.100   0  0
-        0       0       0       1  0" />
-      <feColorMatrix type="matrix" values="
-        -1   0   0   0   1
-         0   1   0   0   0
-         0   0   1   0   0
-         0   0   0   1   0" />
-      <feColorMatrix type="matrix" values="
-        1       0        1.13983  0   -0.569915
-        1      -0.39465 -0.58060  0    0
-        1       2.03211  0        0    0
-        0       0        0        1    0" />
-    </filter>
-  </defs>
-</svg>
-`;
-  }
   if (globalThis.__MDCSS_LINE_SHIFTS__ && globalThis.__MDCSS_LINE_SHIFTS__.length && typeof globalThis.__mdcssOrigLine === "function") {
     html = html.replace(/data-line="(\d+)"/g, (match, line) => `data-line="${globalThis.__mdcssOrigLine(parseInt(line, 10))}"`);
   }

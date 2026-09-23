@@ -10,6 +10,7 @@ import { parseFrontMatter, slugifyHeading } from '@shared/markdown-utils';
 import { getLocale, t } from '../i18n';
 import { encodeDataValue } from './data-attr';
 import { mdcssPre, mdcssPost } from './mdcss-bridge.js';
+import './mdcss-runtime.js';
 export interface Heading {
     level: number;
     text: string;
