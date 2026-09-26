@@ -209,6 +209,7 @@ export interface Attachment {
   id: string
   noteId: string | null
   filename: string
+  slug: string | null
   mime: string
   size: number
   width: number | null

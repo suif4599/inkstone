@@ -443,18 +443,29 @@ export function extractWikiLinks(content: string): WikiLink[] {
 }
 
 const ATTACHMENT_REFERENCE_RE =
-  /(?:^|[\s(<"'=])\/api\/files\/([0-9a-hjkmnp-tv-z]{26})(?=$|[\s>)\]"'?#])/g
+  /(?:^|[\s(<"'=])\/api\/files\/([0-9a-hjkmnp-tv-z]{26}|[a-z0-9_-]{1,64})(?=$|[\s>)\]"'?#])/g
+
+const ATTACHMENT_DESTINATION_RE = /\]\([ \t]*<([a-z0-9_-]{1,64})>/g
+
+const ATTACHMENT_ID_RE = /^[0-9a-hjkmnp-tv-z]{26}$/
+const ATTACHMENT_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+export function isValidAttachmentSlug(value: unknown): value is string {
+  return typeof value === 'string' && ATTACHMENT_SLUG_RE.test(value) && !ATTACHMENT_ID_RE.test(value)
+}
 
 
-export function extractAttachmentIds(content: string): string[] {
+export function extractAttachmentReferences(content: string): string[] {
   const body = splitFrontMatter(content).body
   const ids = new Set<string>()
-  for (const match of stripCodeRegions(body).matchAll(ATTACHMENT_REFERENCE_RE)) ids.add(match[1]!)
+  const safe = stripCodeRegions(body)
+  for (const match of safe.matchAll(ATTACHMENT_REFERENCE_RE)) ids.add(match[1]!)
+  for (const match of safe.matchAll(ATTACHMENT_DESTINATION_RE)) ids.add(match[1]!)
   // md-example fences are rendered as live markdown by the client renderer,
   // so references inside them count even though stripCodeRegions discards
   // them as ordinary code regions.
   for (const inner of markdownExampleBodies(body)) {
-    for (const id of extractAttachmentIds(inner)) ids.add(id)
+    for (const id of extractAttachmentReferences(inner)) ids.add(id)
   }
   return [...ids]
 }
@@ -476,9 +487,10 @@ function markdownExampleBodies(text: string): string[] {
           collecting = []
         }
       } else if (marker[0]! === fenceChar && marker.length >= fenceLen && !(fence[2] ?? '').trim()) {
-        // A closing fence may only be followed by spaces or tabs.
         bodies.push(collecting.join('\n'))
         collecting = null
+      } else {
+        collecting.push(line)
       }
       continue
     }
@@ -486,6 +498,123 @@ function markdownExampleBodies(text: string): string[] {
   }
   if (collecting) bodies.push(collecting.join('\n'))
   return bodies
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function attachmentUrlReplaceRegExp(from: string): RegExp {
+  return new RegExp(`(^|[\\s(<"'=])\\/api\\/files\\/${escapeRegExp(from)}(?=$|[\\s>)\\]"'?#])`, 'g')
+}
+
+function attachmentDestinationReplaceRegExp(from: string): RegExp {
+  return new RegExp(`(\\]\\([ \\t]*<)${escapeRegExp(from)}(?=>)`, 'g')
+}
+
+function attachmentDestinationFor(to: string): string {
+  return isValidAttachmentSlug(to) ? to : `/api/files/${to}`
+}
+
+const INLINE_CODE_SPLIT_RE = /(`+[^`\n]*`+)/g
+
+function replaceOutsideInlineCode(line: string, replace: (segment: string) => string): string {
+  return line
+    .split(INLINE_CODE_SPLIT_RE)
+    .map((segment, index) => (index % 2 === 0 ? replace(segment) : segment))
+    .join('')
+}
+
+function mapAttachmentLines(
+  content: string,
+  rewriteLine: (line: string) => string,
+  includeExampleBodies: boolean,
+): string {
+  const frontMatter = parseFrontMatter(content)
+  const lines = content.split('\n')
+  const fences: Array<{ char: string; length: number; example: boolean }> = []
+  for (let index = frontMatter.lineOffset; index < lines.length; index++) {
+    const line = lines[index]!
+    const fence = /^[ \t]{0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence) {
+      const marker = fence[1]!
+      const info = (fence[2] ?? '').trim()
+      const top = fences.at(-1)
+      if (!top) {
+        fences.push({
+          char: marker[0]!,
+          length: marker.length,
+          example: includeExampleBodies && /^(?:md-example|markdown-example)\b/.test(info),
+        })
+      } else if (marker[0]! === top.char && marker.length >= top.length && !(top.example && info)) {
+        fences.pop()
+      } else if (top.example) {
+        fences.push({ char: marker[0]!, length: marker.length, example: false })
+      }
+      continue
+    }
+    const top = fences.at(-1)
+    if (top && !top.example) continue
+    lines[index] = rewriteLine(line)
+  }
+  return lines.join('\n')
+}
+
+export function replaceAttachmentUrls(content: string, from: string, to: string): string {
+  if (!isValidAttachmentSlug(from) && !ATTACHMENT_ID_RE.test(from)) return content
+  const destination = attachmentDestinationFor(to)
+  return mapAttachmentLines(
+    content,
+    (line) =>
+      replaceOutsideInlineCode(line, (segment) =>
+        segment
+          .replace(attachmentUrlReplaceRegExp(from), (_whole, lead: string) => `${lead}/api/files/${to}`)
+          .replace(attachmentDestinationReplaceRegExp(from), (_whole, lead: string) => `${lead}${destination}`),
+      ),
+    false,
+  )
+}
+
+const ATTACHMENT_URL_RESOLVE_RE =
+  /(^|[\s(<"'=])\/api\/files\/([0-9a-hjkmnp-tv-z]{26}|[a-z0-9_-]{1,64})(?=$|[\s>)\]"'?#])/g
+const ATTACHMENT_DESTINATION_RESOLVE_RE = /(\]\([ \t]*<)([a-z0-9_-]{1,64})>/g
+
+export interface ResolvedAttachmentContent {
+  content: string
+  unresolved: Set<string>
+}
+
+export function resolveAttachmentReferences(
+  content: string,
+  resolve: (slug: string) => string | null,
+): ResolvedAttachmentContent {
+  const unresolved = new Set<string>()
+  const resolveSegment = (segment: string): string =>
+    segment
+      .replace(ATTACHMENT_URL_RESOLVE_RE, (whole: string, lead: string, token: string) => {
+        if (ATTACHMENT_ID_RE.test(token)) return whole
+        const id = resolve(token)
+        if (id === null) {
+          unresolved.add(token)
+          return whole
+        }
+        return `${lead}/api/files/${id}`
+      })
+      .replace(ATTACHMENT_DESTINATION_RESOLVE_RE, (whole: string, lead: string, token: string) => {
+        if (ATTACHMENT_ID_RE.test(token)) return whole
+        const id = resolve(token)
+        if (id === null) {
+          unresolved.add(token)
+          return whole
+        }
+        return `${lead}/api/files/${id}>`
+      })
+  const resolved = mapAttachmentLines(
+    content,
+    (line) => replaceOutsideInlineCode(line, resolveSegment),
+    true,
+  )
+  return { content: resolved, unresolved }
 }
 
 export function normalizeLinkKey(title: string): string {

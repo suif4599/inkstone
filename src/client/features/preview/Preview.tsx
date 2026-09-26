@@ -27,6 +27,7 @@ import { updateTaskAtSourceLine } from '../../editor/commands'
 import { useUi } from '../../store/ui'
 import { useNotes, findNoteByTitle } from '../../store/notes'
 import { useSession } from '../../store/session'
+import { useAttachmentSlugs } from '../../store/attachment-slugs'
 import { previewSourceAnchors } from './preview-anchors'
 import { moveMarkdownTabFocus, selectMarkdownTab } from './markdown-tabs'
 import { capturePreviewInteractionState, restorePreviewInteractionState } from './preview-state'
@@ -69,7 +70,15 @@ export const Preview = memo(function Preview({
 
 
   const debounced = useDebounced(content, 90)
-  const rendered = useMemo(() => renderMarkdown(debounced), [debounced, locale])
+  const slugMap = useAttachmentSlugs((s) => s.map)
+  useEffect(() => {
+    void useAttachmentSlugs.getState().ensure()
+  }, [])
+  const resolvedContent = useMemo(
+    () => useAttachmentSlugs.getState().resolve(debounced).content,
+    [debounced, slugMap],
+  )
+  const rendered = useMemo(() => renderMarkdown(resolvedContent), [resolvedContent, locale])
   const embedContextTitle = rendered.hasEmbeds ? currentTitle : ''
   const [committedHtml, setCommittedHtml] = useState(rendered.html)
   const committedHtmlRef = useRef(committedHtml)

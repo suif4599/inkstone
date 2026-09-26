@@ -305,7 +305,7 @@ function addShareAccess(html: string, slug: string): string {
         try {
             const url = new URL(raw, window.location.origin);
             if (url.origin !== window.location.origin ||
-                !/^\/api\/files\/[0-9a-hjkmnp-tv-z]{26}$/i.test(url.pathname)) {
+                !/^\/api\/files\/[0-9a-hjkmnp-tv-z]{26}$/.test(url.pathname)) {
                 continue;
             }
             url.searchParams.set('share', slug);

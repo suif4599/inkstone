@@ -30,6 +30,7 @@ export interface CodeEditorProps {
     onReady?: (view: EditorView | null) => void;
     onScroll?: (view: EditorView) => void;
     onCursorLine?: (line: number) => void;
+    onRenameAttachment?: (view: EditorView) => boolean;
     placeholder?: string;
     className?: string;
 }
@@ -41,12 +42,12 @@ export function DeferredCodeEditor({ visible, ...props }: CodeEditorProps & { vi
     // Preserve undo history across mode changes once editing has started.
     return visible || initialized ? <CodeEditor {...props}/> : null;
 }
-export function CodeEditor({ value, live = false, noteTitle = '', onHeadings, onChange, settings, sources, handlers, onReady, onScroll, onCursorLine, placeholder = t("editor.start_writing"), className, }: CodeEditorProps) {
+export function CodeEditor({ value, live = false, noteTitle = '', onHeadings, onChange, settings, sources, handlers, onReady, onScroll, onCursorLine, onRenameAttachment, placeholder = t("editor.start_writing"), className, }: CodeEditorProps) {
     const hostRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
 
-    const cbRef = useRef({ onChange, onScroll, onCursorLine, sources, handlers, onHeadings, noteTitle });
-    cbRef.current = { onChange, onScroll, onCursorLine, sources, handlers, onHeadings, noteTitle };
+    const cbRef = useRef({ onChange, onScroll, onCursorLine, sources, handlers, onHeadings, noteTitle, onRenameAttachment });
+    cbRef.current = { onChange, onScroll, onCursorLine, sources, handlers, onHeadings, noteTitle, onRenameAttachment };
 
     const liveCompartment = useRef(new Compartment());
     const lineNumbersCompartment = useRef(new Compartment());
@@ -98,6 +99,7 @@ export function CodeEditor({ value, live = false, noteTitle = '', onHeadings, on
             keymap.of([
                 { key: 'Enter', run: (view) => completeCodeFenceOnEnter(view) || smartEnter(view) },
                 { key: 'Tab', run: (view) => acceptCompletion(view) || tableTab(view) },
+                { key: 'Alt-r', run: (view) => cbRef.current.onRenameAttachment?.(view) ?? false, preventDefault: true },
                 { key: 'Mod-b', run: toggleBold, preventDefault: true },
                 { key: 'Mod-i', run: toggleItalic, preventDefault: true },
                 { key: 'Mod-e', run: toggleInlineCode, preventDefault: true },

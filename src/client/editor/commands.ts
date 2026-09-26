@@ -695,3 +695,31 @@ function longestCharacterRun(value: string, character: string): number {
     }
     return longest;
 }
+
+const ATTACHMENT_URI_RE = /\/api\/files\/([0-9a-zA-Z_-]{1,64})/g;
+const ATTACHMENT_TOKEN_RE = /^[0-9a-zA-Z_-]{1,64}$/;
+const ATTACHMENT_LINK_RE = /!?\[[^\]\n]*\]\([ \t]*(?:<([^<>\n]*)>|([^)<>\s\n][^)<>\n]*))/g;
+
+export function attachmentReferenceAt(state: EditorState): { from: number; to: number; token: string } | null {
+    const position = state.selection.main.head;
+    const line = state.doc.lineAt(position);
+    for (const match of line.text.matchAll(ATTACHMENT_LINK_RE)) {
+        const destination = (match[1] ?? match[2] ?? '').trim();
+        const token = destination.startsWith('/api/files/') ? destination.slice('/api/files/'.length) : destination;
+        if (!token || !ATTACHMENT_TOKEN_RE.test(token)) continue;
+        const from = line.from + match.index!;
+        const closing = line.text.indexOf(')', match.index! + match[0].length);
+        const to = line.from + (closing < 0 ? match.index! + match[0].length : closing + 1);
+        if (position >= from && position <= to) {
+            return { from, to, token };
+        }
+    }
+    for (const match of line.text.matchAll(ATTACHMENT_URI_RE)) {
+        const from = line.from + match.index!;
+        const to = from + match[0].length;
+        if (position >= from && position <= to) {
+            return { from, to, token: match[1]! };
+        }
+    }
+    return null;
+}

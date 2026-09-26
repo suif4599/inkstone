@@ -1070,6 +1070,155 @@ if (noteId) {
   }
 }
 
+console.log('[attachment slug]')
+if (noteId) {
+  const original = await owner.req('GET', `/api/notes/${noteId}`)
+  const form = new FormData()
+  form.set('file', new Blob(['slug attachment'], { type: 'text/plain' }), 'slug.txt')
+  form.set('noteId', noteId)
+  form.set('slug', 'e2e-slug')
+  const uploaded = await fetch(BASE + '/api/files', {
+    method: 'POST',
+    headers: { 'X-Inkstone-Client': '1', Cookie: owner.jar.cookie },
+    body: form,
+  })
+  const attachment = await uploaded.json().catch(() => null)
+  check(
+    'upload with a slug returns an id-form url',
+    uploaded.status === 201 && attachment?.slug === 'e2e-slug' &&
+      attachment?.url === `/api/files/${attachment?.id}`,
+    `status=${uploaded.status} body=${JSON.stringify(attachment)}`,
+  )
+  const bySlug = await fetch(BASE + '/api/files/e2e-slug', { headers: { Cookie: owner.jar.cookie } })
+  check('slug urls are no longer fetchable', bySlug.status === 404, `status=${bySlug.status}`)
+
+  const dupWithSlug = new FormData()
+  dupWithSlug.set('file', new Blob(['duplicate'], { type: 'text/plain' }), 'dup.txt')
+  dupWithSlug.set('slug', 'e2e-slug')
+  const dupUpload = await fetch(BASE + '/api/files', {
+    method: 'POST',
+    headers: { 'X-Inkstone-Client': '1', Cookie: owner.jar.cookie },
+    body: dupWithSlug,
+  })
+  check('duplicate slug upload is rejected', dupUpload.status === 409, `status=${dupUpload.status}`)
+
+  const badForm = new FormData()
+  badForm.set('file', new Blob(['x'], { type: 'text/plain' }), 'x.txt')
+  badForm.set('slug', '01m1r8923zajxnw9y0dhs6sy8j')
+  const badUpload = await fetch(BASE + '/api/files', {
+    method: 'POST',
+    headers: { 'X-Inkstone-Client': '1', Cookie: owner.jar.cookie },
+    body: badForm,
+  })
+  check('id-lookalike slug is rejected', badUpload.status === 400, `status=${badUpload.status}`)
+
+  if (attachment?.id) {
+    const slugMap = await owner.req('GET', '/api/files/slugs')
+    check(
+      'the slug map lists the uploaded slug',
+      slugMap.status === 200 && slugMap.data?.slugs?.['e2e-slug'] === attachment.id,
+      `status=${slugMap.status} body=${JSON.stringify(slugMap.data)}`,
+    )
+    const linked = await owner.req('PATCH', `/api/notes/${noteId}`, {
+      rev: original.data?.rev,
+      content: `${original.data?.content ?? ''}\n\n[slug link](<e2e-slug>)`,
+    })
+    const renamed = await owner.req('PATCH', `/api/files/${attachment.id}`, { slug: 'e2e-renamed' })
+    const afterRename = await owner.req('GET', `/api/notes/${noteId}`)
+    check(
+      'rename rewrites slug references in note content',
+      linked.status === 200 && renamed.status === 200 && renamed.data?.rewritten >= 1 &&
+        afterRename.data?.content.includes('<e2e-renamed>') &&
+        !afterRename.data?.content.includes('<e2e-slug>'),
+      `link=${linked.status} rename=${renamed.status} rewritten=${renamed.data?.rewritten}`,
+    )
+    const byId = await fetch(BASE + `/api/files/${attachment.id}`, { headers: { Cookie: owner.jar.cookie } })
+    const oldSlug = await fetch(BASE + '/api/files/e2e-slug', { headers: { Cookie: owner.jar.cookie } })
+    check(
+      'the attachment stays reachable by id while slug urls stay gone',
+      byId.status === 200 && oldSlug.status === 404,
+      `id=${byId.status} slug=${oldSlug.status}`,
+    )
+
+    const shareAgain = await owner.req('POST', `/api/share/${noteId}`, {})
+    const shareSlug = shareAgain.data?.share?.slug
+    if (shareSlug) {
+      const publicNote = await fetch(BASE + `/api/public/${encodeURIComponent(shareSlug)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Inkstone-Client': '1' },
+        body: JSON.stringify({ password: 'e2e-share-secret' }),
+      })
+      const publicBody = await publicNote.json().catch(() => null)
+      const shareCookie = (getSetCookie(publicNote).find((value) => value.startsWith(`inkstone_share_${shareSlug}=`)) ?? '').split(';', 1)[0]
+      const sharedAsset = await fetch(
+        BASE + `/api/files/${attachment.id}?share=${encodeURIComponent(shareSlug)}`,
+        { headers: { Cookie: shareCookie } },
+      )
+      check(
+        'shared note content resolves slug tokens and the asset stays readable through a protected share',
+        publicNote.status === 200 &&
+          String(publicBody?.content ?? '').includes(`/api/files/${attachment.id}>`) &&
+          sharedAsset.status === 200,
+        `note=${publicNote.status} asset=${sharedAsset.status} content=${JSON.stringify(publicBody?.content ?? '')}`,
+      )
+    }
+
+    const pruned = await owner.req('POST', '/api/files/prune')
+    check(
+      'prune keeps an attachment referenced only via its slug',
+      pruned.status === 200 && pruned.data?.removed === 0,
+      `removed=${pruned.data?.removed}`,
+    )
+
+    const otherForm = new FormData()
+    otherForm.set('file', new Blob(['other'], { type: 'text/plain' }), 'other.txt')
+    otherForm.set('slug', 'e2e-other')
+    const otherUpload = await fetch(BASE + '/api/files', {
+      method: 'POST',
+      headers: { 'X-Inkstone-Client': '1', Cookie: owner.jar.cookie },
+      body: otherForm,
+    })
+    const other = await otherUpload.json().catch(() => null)
+    const conflict = await owner.req('PATCH', `/api/files/${attachment.id}`, { slug: 'e2e-other' })
+    check(
+      'renaming onto a taken slug conflicts',
+      otherUpload.status === 201 && conflict.status === 409,
+      `other=${otherUpload.status} conflict=${conflict.status}`,
+    )
+
+    const cleared = await owner.req('PATCH', `/api/files/${attachment.id}`, { slug: null })
+    const afterClear = await owner.req('GET', `/api/notes/${noteId}`)
+    check(
+      'clearing the slug rewrites references back to the id form',
+      cleared.status === 200 && afterClear.status === 200 &&
+        afterClear.data?.content.includes(`</api/files/${attachment.id}>`) &&
+        !afterClear.data?.content.includes('<e2e-renamed>'),
+    )
+
+    const reassigned = await owner.req('PATCH', `/api/files/${attachment.id}`, { slug: 'e2e-assigned' })
+    const afterAssign = await owner.req('GET', `/api/notes/${noteId}`)
+    check(
+      'assigning a slug rewrites id-form references to the slug',
+      reassigned.status === 200 && reassigned.data?.rewritten >= 1 && afterAssign.status === 200 &&
+        afterAssign.data?.content.includes('</api/files/e2e-assigned>') &&
+        !afterAssign.data?.content.includes(`</api/files/${attachment.id}>`),
+      `assign=${reassigned.status} rewritten=${reassigned.data?.rewritten}`,
+    )
+
+    const restored = await owner.req('PATCH', `/api/notes/${noteId}`, {
+      rev: afterAssign.data?.rev,
+      content: original.data?.content ?? '',
+    })
+    await owner.req('DELETE', `/api/files/${attachment.id}`)
+    if (other?.id) await owner.req('DELETE', `/api/files/${other.id}`)
+    check(
+      'section cleanup restores the note and removes fixtures',
+      restored.status === 200,
+      `restore=${restored.status} otherUpload=${otherUpload.status}`,
+    )
+  }
+}
+
 console.log('[revocable session]')
 {
   const before = await owner.req('GET', '/api/auth/session')

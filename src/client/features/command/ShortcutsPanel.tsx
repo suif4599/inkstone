@@ -18,6 +18,7 @@ const EDITOR_SHORTCUTS: {
     { combo: 'mod+shift+9', description: () => t("common.task_list") },
     { combo: 'mod+shift+.', description: () => t("common.quote") },
     { combo: 'mod+shift+enter', description: () => t("command.check_uncheck_tasks") },
+    { combo: 'alt+r', description: () => t("editor.rename_attachment") },
     { combo: 'alt+arrowup', description: () => t("command.move_line_up") },
     { combo: 'alt+arrowdown', description: () => t("command.move_line_down") },
     { combo: 'mod+shift+k', description: () => t("command.delete_line") },

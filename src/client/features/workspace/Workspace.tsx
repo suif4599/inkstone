@@ -2,18 +2,19 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { EditorView } from '@codemirror/view';
 import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Star, X, } from 'lucide-react';
 import { cn } from '../../lib/cn';
-import { api } from '../../lib/api';
-import { readingMinutes } from '@shared/markdown-utils';
+import { api, ApiError } from '../../lib/api';
+import { isValidAttachmentSlug, readingMinutes, replaceAttachmentUrls } from '@shared/markdown-utils';
 import { LIMITS } from '@shared/constants';
 import type { EditorLayout } from '@shared/types';
 import { fullTime } from '../../lib/time';
 import { useBreakpoint, useRelativeTime } from '../../lib/hooks';
 import { prettyCombo } from '../../lib/hotkeys';
 import { Button, IconButton } from '../../components/primitives';
-import { Drawer, Menu, Tooltip, type MenuItem } from '../../components/overlay';
-import { Segmented } from '../../components/form';
+import { Drawer, Menu, Modal, Tooltip, type MenuItem } from '../../components/overlay';
+import { Input, Segmented } from '../../components/form';
 import { EditorSkeleton, Empty } from '../../components/feedback';
 import { DeferredCodeEditor } from '../../editor/CodeEditor';
+import { attachmentReferenceAt } from '../../editor/commands';
 import { insertFiles } from '../../editor/paste';
 import { optimizeImageFile } from '../../lib/image';
 import { exportNoteAsHtml, exportNoteAsMarkdown, exportNoteAsPdf } from '../../lib/export-note';
@@ -26,7 +27,9 @@ import { SaveIndicator } from '../shell/SaveIndicator';
 import type { Heading } from '../../lib/markdown/renderer';
 import { useUi, type WorkspacePane } from '../../store/ui';
 import { useSession } from '../../store/session';
+import { useAttachmentSlugs } from '../../store/attachment-slugs';
 import { createContextualNote, useActiveNote, useNotes } from '../../store/notes';
+import { applyAttachmentRename } from '../attachments/rename';
 import { folderPathLabel, openFolderView } from '../../lib/folders';
 import { useSyncScroll } from './sync-scroll';
 import { t, useLocale } from "../../lib/i18n";
@@ -66,7 +69,6 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
     const breakpoint = useBreakpoint();
     const containerRef = useRef<HTMLDivElement>(null);
     const previewScrollerRef = useRef<HTMLDivElement>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
     const titleInputRef = useRef<HTMLInputElement>(null);
     const moreButtonRef = useRef<HTMLButtonElement>(null);
     const exportMenuRef = useRef<HTMLButtonElement>(null);
@@ -74,6 +76,8 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
     const [headings, setHeadings] = useState<Heading[]>([]);
     const [moreMenuOpen, setMoreMenuOpen] = useState(false);
     const [exportMenuOpen, setExportMenuOpen] = useState(false);
+    const [uploadModalOpen, setUploadModalOpen] = useState(false);
+    const [renameTarget, setRenameTarget] = useState<{ view: EditorView; token: string } | null>(null);
     const [mobileOutlineOpen, setMobileOutlineOpen] = useState(false);
     const [containerWidth, setContainerWidth] = useState(0);
     const isMobile = breakpoint === 'mobile';
@@ -139,14 +143,17 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
         tags: () => tags.map((t) => ({ name: t.name, count: t.count })),
     }), [notes, tags, note?.id]);
     const handlers = useMemo(() => ({
-        uploadFile: async (file: File) => {
+        uploadFile: async (file: File, slug?: string) => {
             try {
                 const optimized = await optimizeImageFile(file);
-                const uploaded = await api.files.upload(optimized, note?.id);
+                const uploaded = await api.files.upload(optimized, note?.id, slug);
+                if (uploaded.slug)
+                    useAttachmentSlugs.getState().noteUploaded(uploaded.slug, uploaded.id);
                 return {
                     url: uploaded.url,
                     filename: uploaded.filename,
                     isImage: uploaded.mime.startsWith('image/'),
+                    slug: uploaded.slug,
                 };
             }
             catch (err) {
@@ -181,6 +188,60 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
         command(view);
         view.focus();
     }, [view]);
+    const onRenameAttachment = useCallback((target: EditorView) => {
+        const reference = attachmentReferenceAt(target.state);
+        if (!reference)
+            return false;
+        setRenameTarget({ view: target, token: reference.token });
+        return true;
+    }, []);
+    const submitAttachmentRename = useCallback(async (slug: string | null): Promise<boolean> => {
+        const target = renameTarget;
+        if (!target)
+            return true;
+        try {
+            const response = await api.files.rename(target.token, slug);
+            const targetView = target.view.dom.isConnected ? target.view : null;
+            if (targetView) {
+                const source = targetView.state.doc.toString();
+                const next = replaceAttachmentUrls(source, target.token, response.token);
+                if (next !== source) {
+                    targetView.dispatch({
+                        changes: { from: 0, to: targetView.state.doc.length, insert: next },
+                        userEvent: 'input.renameAttachment',
+                    });
+                }
+            }
+            const refreshed = await applyAttachmentRename(target.token, response.token);
+            toast({
+                title: response.slug
+                    ? t("attachments.renamed_value0", { value0: response.slug })
+                    : t("attachments.slug_cleared"),
+                description: refreshed ? t("attachments.updated_note_bodies_value0", { value0: response.rewritten }) : undefined,
+                tone: refreshed ? 'success' : 'warning',
+            });
+            return true;
+        }
+        catch (err) {
+            toast({
+                title: err instanceof ApiError && err.isConflict
+                    ? t("attachments.slug_taken")
+                    : t("attachments.rename_failed"),
+                description: err instanceof Error ? err.message : String(err),
+                tone: 'danger',
+            });
+            return false;
+        }
+    }, [renameTarget, toast]);
+    const submitUpload = useCallback(async (files: File[], slug: string) => {
+        setUploadModalOpen(false);
+        if (!view || !files.length)
+            return;
+        const wrapped = slug && files.length === 1
+            ? { ...handlers, uploadFile: (file: File) => handlers.uploadFile(file, slug) }
+            : handlers;
+        await insertFiles(view, files, wrapped);
+    }, [view, handlers]);
     const invalidateSyncAnchors = useSyncScroll(view, previewScrollerRef, settings.preview.syncScroll && layout === 'split');
     const jumpToHeading = useCallback((heading: Heading) => {
         if (view && showEditor) {
@@ -421,11 +482,11 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
         </div>
       </header>
 
-      {settings.editor.showToolbar && showEditor && (<EditorToolbar runCommand={runEditorCommand} mobile={isMobile} onPickImage={() => fileInputRef.current?.click()}/>)}
+      {settings.editor.showToolbar && showEditor && (<EditorToolbar runCommand={runEditorCommand} mobile={isMobile} onPickImage={() => setUploadModalOpen(true)}/>)}
 
       <div ref={containerRef} className={cn("flex min-h-0 flex-1", isMobile && "flex-col")} data-editor-layout={layout}>
         <div hidden={!showEditor} inert={!showEditor} className="min-h-0 min-w-0" style={{ width: layout === 'split' && !isMobile ? editorWidth : outlineVisible ? `calc(100% - ${OUTLINE_WIDTH}px)` : '100%', flex: isMobile ? 1 : undefined }}>
-            <DeferredCodeEditor key={note.id} visible={showEditor} value={content} noteTitle={note.title} live={layout === 'live' && !(isMobile && settings.preview.mobileSourceEditor)} onHeadings={setHeadings} onChange={onChange} settings={settings.editor} sources={sources} handlers={handlers} onReady={setView}/>
+            <DeferredCodeEditor key={note.id} visible={showEditor} value={content} noteTitle={note.title} live={layout === 'live' && !(isMobile && settings.preview.mobileSourceEditor)} onHeadings={setHeadings} onChange={onChange} settings={settings.editor} sources={sources} handlers={handlers} onReady={setView} onRenameAttachment={onRenameAttachment}/>
           </div>
 
         {layout === 'split' && !isMobile && (<SplitResizer label={t("workspace.resize_editor_and_preview_panes")} containerRef={containerRef} ratio={effectiveSplitRatio} onChange={(splitRatio) => setLayout({ splitRatio })} onReset={() => setLayout({ splitRatio: null })}/>)}
@@ -466,13 +527,99 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
         <span className={cn('hidden', grouped ? '2xl:inline' : 'lg:inline')}>{t("common.created")}{fullTime(note.createdAt)}</span>
       </footer>
 
-      <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={async (event) => {
-            const files = [...(event.target.files ?? [])];
-            event.target.value = '';
-            if (view && files.length)
-                await insertFiles(view, files, handlers);
-        }}/>
+      <UploadAttachmentModal open={uploadModalOpen} onClose={() => setUploadModalOpen(false)} onSubmit={submitUpload}/>
+
+      <AttachmentRenameModal target={renameTarget} onClose={() => setRenameTarget(null)} onSubmit={submitAttachmentRename}/>
     </div>);
+}
+function UploadAttachmentModal({ open, onClose, onSubmit }: {
+    open: boolean;
+    onClose: () => void;
+    onSubmit: (files: File[], slug: string) => void;
+}) {
+    const inputRef = useRef<HTMLInputElement>(null);
+    const [files, setFiles] = useState<File[]>([]);
+    const [slug, setSlug] = useState('');
+    useEffect(() => {
+        if (open) {
+            setFiles([]);
+            setSlug('');
+        }
+    }, [open]);
+    const submit = () => {
+        if (!files.length)
+            return;
+        onSubmit(files, slug.trim());
+    };
+    return (<Modal open={open} onClose={onClose} title={t("workspace.upload_attachment")} description={t("workspace.attachment_slug_hint")} width={420} footer={<>
+            <Button variant="secondary" onClick={onClose}>{t("common.cancel")}</Button>
+            <Button disabled={!files.length} onClick={submit}>{t("workspace.upload")}</Button>
+          </>}>
+        <div className="flex flex-col gap-3">
+          <Button variant="secondary" onClick={() => inputRef.current?.click()}>
+            {files.length
+                ? files.length === 1 ? files[0]!.name : t("workspace.selected_files_value0", { value0: files.length })
+                : t("workspace.choose_file")}
+          </Button>
+          <input ref={inputRef} type="file" accept="image/*" multiple hidden onChange={(event) => {
+                setFiles([...(event.target.files ?? [])]);
+                event.target.value = '';
+            }}/>
+          <label className="flex flex-col gap-1.5 text-[12.5px] text-[var(--text-secondary)]">
+            <span>{t("workspace.attachment_slug_label")}</span>
+            <Input value={slug} maxLength={64} placeholder={t("attachments.slug_placeholder")} disabled={files.length > 1} data-autofocus onChange={(event) => setSlug(event.target.value)} onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        submit();
+                    }
+                }}/>
+          </label>
+        </div>
+      </Modal>);
+}
+
+function AttachmentRenameModal({ target, onClose, onSubmit }: {
+    target: { view: EditorView; token: string } | null;
+    onClose: () => void;
+    onSubmit: (slug: string | null) => Promise<boolean>;
+}) {
+    const [value, setValue] = useState('');
+    const [busy, setBusy] = useState(false);
+    const token = target?.token ?? '';
+    useEffect(() => {
+        if (target)
+            setValue(isValidAttachmentSlug(target.token) ? target.token : '');
+    }, [target]);
+    const submit = async () => {
+        const next = value.trim();
+        if (next && !isValidAttachmentSlug(next)) {
+            useUi.getState().toast({ title: t("attachments.slug_invalid"), tone: 'danger' });
+            return;
+        }
+        if (next === (isValidAttachmentSlug(token) ? token : '')) {
+            onClose();
+            return;
+        }
+        setBusy(true);
+        const done = await onSubmit(next || null);
+        setBusy(false);
+        if (done)
+            onClose();
+    };
+    return (<Modal open={Boolean(target)} onClose={onClose} title={t("editor.rename_attachment")} description={t("editor.rename_attachment_hint")} width={420} footer={<>
+            <Button variant="secondary" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
+            <Button disabled={busy} onClick={() => void submit()}>{t("attachments.rename")}</Button>
+          </>}>
+        <div className="flex flex-col gap-3">
+          <code className="truncate rounded-[var(--r-md)] bg-[var(--bg-inset)] px-2.5 py-1.5 text-[12px] text-[var(--text-secondary)]">{isValidAttachmentSlug(token) ? `<${token}>` : `/api/files/${token}`}</code>
+          <Input value={value} maxLength={64} placeholder={t("attachments.slug_placeholder")} disabled={busy} data-autofocus onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void submit();
+                }
+            }}/>
+        </div>
+      </Modal>);
 }
 function NoNoteSelected({ onCreate }: {
     onCreate: () => void;

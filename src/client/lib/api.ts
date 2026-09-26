@@ -410,12 +410,19 @@ export const api = {
       `/api/files${toQuery({ cursor })}`,
       { signal },
     ),
-    upload: (file: File, noteId?: string) => {
+    slugMap: () => request<{ slugs: Record<string, string> }>('/api/files/slugs'),
+    upload: (file: File, noteId?: string, slug?: string) => {
       const form = new FormData()
       form.append('file', file)
       if (noteId) form.append('noteId', noteId)
+      if (slug) form.append('slug', slug)
       return request<Attachment>('/api/files', { method: 'POST', formData: form })
     },
+    rename: (key: string, slug: string | null) =>
+      request<{ ok: true; slug: string | null; token: string; rewritten: number }>(`/api/files/${key}`, {
+        method: 'PATCH',
+        body: { slug },
+      }),
     remove: (id: string) => request<{ ok: true }>(`/api/files/${id}`, { method: 'DELETE' }),
     prune: () => request<{ removed: number; freedBytes: number }>('/api/files/prune', { method: 'POST' }),
   },

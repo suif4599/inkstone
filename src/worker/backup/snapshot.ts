@@ -13,7 +13,7 @@ import {
   MARKDOWN_BACKUP_VERSION,
 } from '@shared/backup-format'
 import { APP_VERSION, LIMITS } from '@shared/constants'
-import { extractAttachmentIds } from '@shared/markdown-utils'
+import { extractAttachmentReferences } from '@shared/markdown-utils'
 import { truncateText } from '@shared/text-utils'
 import type { ExportBundle } from '@shared/types'
 import { estimateZipSizeFromSizes } from '@shared/zip'
@@ -27,6 +27,7 @@ import { NOTE_COLUMNS_FULL, toFolder, toNote, toTag, type FolderRow, type NoteRo
 import type { Env } from '../env'
 import { sha256Hex } from '../lib/encoding'
 import { ApiError } from '../lib/errors'
+import { isValidId } from '../lib/id'
 import { safeAttachmentMime } from '../lib/image'
 
 export type BackupFileKind = 'note' | 'attachment' | 'readme' | 'manifest' | 'complete'
@@ -61,6 +62,7 @@ interface AttachmentSnapshotRow {
   id: string
   user_id: string
   filename: string
+  slug: string | null
   mime: string
   size: number
   sha256: string
@@ -72,7 +74,8 @@ const encoder = new TextEncoder()
 const NOTE_PAGE_SIZE = 100
 const ATTACHMENT_LOOKUP_BATCH = 200
 const ATTACHMENT_REFERENCE_RE =
-  /\/api\/files\/([0-9a-hjkmnp-tv-z]{26})(?=$|[\s>)\]"'?#])/g
+  /\/api\/files\/([0-9a-hjkmnp-tv-z]{26}|[a-z0-9_-]{1,64})(?=$|[\s>)\]"'?#])/g
+const ATTACHMENT_DESTINATION_RE = /(\]\([ \t]*<)([a-z0-9_-]{1,64})>/g
 
 export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot> {
   const folderResult = await env.DB.prepare(
@@ -84,7 +87,7 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
   const attachmentsById = new Map<string, AttachmentSnapshotRow>()
 
   const attachmentPathByHash = new Map<string, string>()
-  const attachmentPathById = new Map<string, string>()
+  const attachmentPathByToken = new Map<string, string>()
   const selectedAttachmentsByHash = new Map<string, AttachmentSnapshotRow>()
 
   const now = new Date()
@@ -101,22 +104,28 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
     ).bind(userId, afterId, NOTE_PAGE_SIZE).all<NoteRow>()
     if (!page.results.length) break
 
-    const missingAttachmentIds = new Set<string>()
+    const missingAttachmentTokens = new Set<string>()
     for (const row of page.results) {
-      for (const id of extractAttachmentIds(row.content)) {
-        if (!attachmentsById.has(id)) missingAttachmentIds.add(id)
+      for (const token of extractAttachmentReferences(row.content)) {
+        if (!attachmentsById.has(token)) missingAttachmentTokens.add(token)
       }
     }
-    await loadReferencedAttachments(env.DB, userId, missingAttachmentIds, attachmentsById)
+    await loadReferencedAttachments(env.DB, userId, missingAttachmentTokens, attachmentsById)
 
     for (const row of page.results) {
       const note = toNote(row)
-      const noteAttachmentIds = new Set(extractAttachmentIds(note.content))
-      for (const id of noteAttachmentIds) {
-        const attachment = attachmentsById.get(id)
+      const noteAttachmentIds = new Set<string>()
+      const resolvedTokens = new Set<string>()
+      for (const token of extractAttachmentReferences(note.content)) {
+        const attachment = attachmentsById.get(token)
         if (!attachment) {
-          throw new Error(`A referenced attachment is missing from the database: ${id}`)
+          if (isValidId(token)) {
+            throw new Error(`A referenced attachment is missing from the database: ${token}`)
+          }
+          continue
         }
+        noteAttachmentIds.add(attachment.id)
+        resolvedTokens.add(token)
         validateAttachmentRow(attachment)
         if (!selectedAttachmentsByHash.has(attachment.sha256)) {
           selectedAttachmentsByHash.set(attachment.sha256, attachment)
@@ -125,7 +134,7 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
             backupAttachmentPath(attachment.sha256, safeSegment(attachment.filename)),
           )
         }
-        attachmentPathById.set(id, attachmentPathByHash.get(attachment.sha256)!)
+        attachmentPathByToken.set(token, attachmentPathByHash.get(attachment.sha256)!)
       }
 
       const state: MarkdownBackupNoteState = note.deletedAt
@@ -141,7 +150,7 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
       }
       usedPaths.add(path.toLowerCase())
 
-      const rendered = renderNoteBody(note.content, path, attachmentPathById, noteAttachmentIds)
+      const rendered = renderNoteBody(note.content, path, attachmentPathByToken, resolvedTokens)
       const bytes = encoder.encode(rendered)
       const sha256 = await sha256Hex(bytes)
       const attachmentHashes = [...new Set(
@@ -175,8 +184,8 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
           row.rev,
           path,
           sha256,
-          attachmentPathById,
-          noteAttachmentIds,
+          attachmentPathByToken,
+          resolvedTokens,
         ),
       })
     }
@@ -256,18 +265,23 @@ export async function buildSnapshot(env: Env, userId: string): Promise<Snapshot>
 async function loadReferencedAttachments(
   db: D1Database,
   userId: string,
-  ids: ReadonlySet<string>,
+  tokens: ReadonlySet<string>,
   target: Map<string, AttachmentSnapshotRow>,
 ): Promise<void> {
-  const values = [...ids]
+  const values = [...tokens]
   for (let offset = 0; offset < values.length; offset += ATTACHMENT_LOOKUP_BATCH) {
     const chunk = values.slice(offset, offset + ATTACHMENT_LOOKUP_BATCH)
     const { results } = await db.prepare(
-      `SELECT id, user_id, filename, mime, size, sha256, storage, created_at
+      `SELECT id, user_id, filename, slug, mime, size, sha256, storage, created_at
          FROM attachments
-        WHERE user_id = ?1 AND id IN (SELECT value FROM json_each(?2))`,
+        WHERE user_id = ?1
+          AND (id IN (SELECT value FROM json_each(?2))
+            OR slug IN (SELECT value FROM json_each(?2)))`,
     ).bind(userId, JSON.stringify(chunk)).all<AttachmentSnapshotRow>()
-    for (const row of results) target.set(row.id, row)
+    for (const row of results) {
+      target.set(row.id, row)
+      if (row.slug !== null) target.set(row.slug, row)
+    }
   }
 }
 
@@ -406,13 +420,19 @@ function renderNoteBody(
   content: string,
   notePath: string,
   attachmentPaths: ReadonlyMap<string, string>,
-  referencedIds: ReadonlySet<string>,
+  referencedTokens: ReadonlySet<string>,
 ): string {
-  return content.replace(ATTACHMENT_REFERENCE_RE, (match, id: string) => {
-    if (!referencedIds.has(id)) return match
-    const attachmentPath = attachmentPaths.get(id)
-    return attachmentPath ? relativeBackupUrl(notePath, attachmentPath) : match
-  })
+  return content
+    .replace(ATTACHMENT_REFERENCE_RE, (match, token: string) => {
+      if (!referencedTokens.has(token)) return match
+      const attachmentPath = attachmentPaths.get(token)
+      return attachmentPath ? relativeBackupUrl(notePath, attachmentPath) : match
+    })
+    .replace(ATTACHMENT_DESTINATION_RE, (match, lead: string, token: string) => {
+      if (!referencedTokens.has(token)) return match
+      const attachmentPath = attachmentPaths.get(token)
+      return attachmentPath ? `${lead}${relativeBackupUrl(notePath, attachmentPath)}>` : match
+    })
 }
 
 async function openPlannedNote(
@@ -423,14 +443,14 @@ async function openPlannedNote(
   notePath: string,
   expectedSha256: string,
   attachmentPaths: ReadonlyMap<string, string>,
-  referencedIds: ReadonlySet<string>,
+  referencedTokens: ReadonlySet<string>,
 ): Promise<ReadableStream<Uint8Array>> {
   const row = await env.DB.prepare(
     `SELECT ${NOTE_COLUMNS_FULL} FROM notes n
       WHERE n.user_id = ?1 AND n.id = ?2 AND n.rev = ?3`,
   ).bind(userId, noteId, expectedRev).first<NoteRow>()
   if (!row) throw new Error(`A note changed while the backup was running: ${noteId}`)
-  const bytes = encoder.encode(renderNoteBody(row.content, notePath, attachmentPaths, referencedIds))
+  const bytes = encoder.encode(renderNoteBody(row.content, notePath, attachmentPaths, referencedTokens))
   if ((await sha256Hex(bytes)) !== expectedSha256) {
     throw new Error(`A note changed while the backup was running: ${row.title}`)
   }

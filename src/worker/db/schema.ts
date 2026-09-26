@@ -118,6 +118,7 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     user_id TEXT NOT NULL,
     note_id TEXT,
     filename TEXT NOT NULL,
+    slug TEXT,
     mime TEXT NOT NULL,
     size INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
@@ -129,6 +130,7 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_attachments_user_sha ON attachments(user_id, sha256)`,
   `CREATE INDEX IF NOT EXISTS idx_attachments_note ON attachments(note_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_slug ON attachments(user_id, slug) WHERE slug IS NOT NULL`,
 
   `CREATE TABLE IF NOT EXISTS attachment_cleanup (
     object_key TEXT PRIMARY KEY CHECK (object_key GLOB 'r2:?*' OR object_key GLOB 'kv:?*'),
@@ -520,6 +522,14 @@ const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_versions_user ON note_versions(user_id)`,
     ],
   },
+  {
+    version: 13,
+    skipIfColumnExists: { table: 'attachments', column: 'slug' },
+    statements: [
+      `ALTER TABLE attachments ADD COLUMN slug TEXT`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_slug ON attachments(user_id, slug) WHERE slug IS NOT NULL`,
+    ],
+  },
 ]
 
 const FTS_STATEMENT = `CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -549,7 +559,7 @@ const REQUIRED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   note_tags: ['note_id', 'tag_id'],
   links: ['source_note_id', 'target_key', 'target_title', 'target_note_id', 'user_id'],
   note_versions: ['id', 'note_id', 'user_id', 'title', 'content', 'size', 'created_at'],
-  attachments: ['id', 'user_id', 'note_id', 'filename', 'mime', 'size', 'sha256', 'width', 'height', 'storage', 'created_at'],
+  attachments: ['id', 'user_id', 'note_id', 'filename', 'slug', 'mime', 'size', 'sha256', 'width', 'height', 'storage', 'created_at'],
   attachment_cleanup: ['object_key', 'user_id', 'created_at'],
   import_mappings: ['user_id', 'entity', 'source_id', 'target_id', 'updated_at'],
   backup_targets: ['id', 'user_id', 'type', 'name', 'enabled', 'config', 'secret', 'last_run_at', 'last_status', 'last_error', 'created_at', 'updated_at'],
@@ -620,6 +630,7 @@ const REQUIRED_INDEXES = [
   'idx_attachments_user',
   'idx_attachments_user_sha',
   'idx_attachments_note',
+  'idx_attachments_slug',
   'idx_attachment_cleanup_created',
   'idx_attachment_cleanup_user',
   'idx_import_mappings_target',

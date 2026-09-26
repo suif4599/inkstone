@@ -1,10 +1,11 @@
 import { Hono, type Context } from 'hono'
 import { setCookie } from 'hono/cookie'
 import { LIMITS } from '@shared/constants'
+import { extractAttachmentReferences, resolveAttachmentReferences } from '@shared/markdown-utils'
 import type { PublicNote, ShareInfo } from '@shared/types'
 import type { AppBindings } from '../env'
 import { ApiError } from '../lib/errors'
-import { isValidSlug, newSlug } from '../lib/id'
+import { isValidId, isValidSlug, newSlug } from '../lib/id'
 import { JSON_BODY_LIMITS, readJson, readOptionalJson, requestClientIp } from '../lib/request'
 import { hashPassword, verifyPassword } from '../lib/password'
 import {
@@ -212,6 +213,18 @@ shareRoutes.post('/:slug', async (c) => {
     }>()
   if (!note) throw ApiError.notFound('The note has been deleted')
 
+  const slugTokens = [...new Set(
+    extractAttachmentReferences(note.content).filter((token) => !isValidId(token)),
+  )]
+  let content = note.content
+  if (slugTokens.length) {
+    const slugRows = await c.env.DB.prepare(
+      `SELECT slug, id FROM attachments WHERE user_id = ?1 AND slug IN (SELECT value FROM json_each(?2))`,
+    ).bind(share.user_id, JSON.stringify(slugTokens)).all<{ slug: string; id: string }>()
+    const slugMap = new Map(slugRows.results.map((row) => [row.slug, row.id]))
+    content = resolveAttachmentReferences(note.content, (slug) => slugMap.get(slug) ?? null).content
+  }
+
   c.executionCtx?.waitUntil(
     c.env.DB.prepare(`UPDATE shares SET views = views + 1 WHERE slug = ?1`).bind(slug).run().catch(() => {}),
   )
@@ -233,7 +246,7 @@ shareRoutes.post('/:slug', async (c) => {
 
   const body_: PublicNote = {
     title: note.title,
-    content: note.content,
+    content,
     createdAt: note.created_at,
     updatedAt: note.updated_at,
     author: { name: note.name, avatarUrl: note.avatar_url },

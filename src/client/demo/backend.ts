@@ -5,10 +5,13 @@ import { organizerColorOrNull } from '@shared/organizer-colors'
 import {
   deriveExcerpt,
   deriveTitle,
-  extractAttachmentIds,
+  extractAttachmentReferences,
   extractWikiLinks,
+  isValidAttachmentSlug,
   normalizeLinkKey,
+  replaceAttachmentUrls,
   replaceTagInContent,
+  resolveAttachmentReferences,
   wikiNoteTarget,
 } from '@shared/markdown-utils'
 import type {
@@ -41,6 +44,7 @@ import {
   newDemoId,
   refreshNote,
   summarize,
+  type DemoAttachment,
   type DemoState,
 } from './state'
 
@@ -677,7 +681,9 @@ export function createDemoBackend(): DemoBackend {
     let removed = 0
     let freedBytes = 0
     for (const [id, attachment] of state.attachments) {
-      if ((references.get(id) ?? 0) > 0) continue
+      const count = (references.get(id) ?? 0)
+        + (attachment.meta.slug ? references.get(attachment.meta.slug) ?? 0 : 0)
+      if (count > 0) continue
       revokeAttachment(attachment.meta.url)
       state.attachments.delete(id)
       removed++
@@ -690,7 +696,9 @@ export function createDemoBackend(): DemoBackend {
     return c.json({
       files: [...state.attachments.values()].map((item) => ({
         ...item.meta,
-        references: references.get(item.meta.id) ?? 0,
+        references:
+          (references.get(item.meta.id) ?? 0)
+          + (item.meta.slug ? references.get(item.meta.slug) ?? 0 : 0),
       })),
       nextCursor: null,
     })
@@ -707,6 +715,14 @@ export function createDemoBackend(): DemoBackend {
     if (usedBytes + file.size > LIMITS.attachmentQuotaBytes) {
       return apiError(413, 'payload_too_large', 'The account attachment quota has been reached')
     }
+    const rawSlug = form.get('slug')
+    const slug = typeof rawSlug === 'string' && rawSlug ? rawSlug : null
+    if (slug !== null && !isValidAttachmentSlug(slug)) {
+      return apiError(400, 'bad_request', 'The attachment name may only use lowercase letters, digits, dashes and underscores')
+    }
+    if (slug !== null && findAttachmentBySlug(state, slug)) {
+      return apiError(409, 'conflict', 'This name is already in use')
+    }
     const rawNoteId = form.get('noteId')
     const noteId = typeof rawNoteId === 'string' && rawNoteId ? rawNoteId.slice(0, 128) : null
     if (noteId) {
@@ -716,11 +732,12 @@ export function createDemoBackend(): DemoBackend {
       }
     }
     const id = newDemoId()
-    const url = await browserFileUrl(file)
+    const url = slug ? `/api/files/${id}` : await browserFileUrl(file)
     const meta = {
       id,
       noteId,
       filename: file.name || 'file',
+      slug,
       mime: file.type || 'application/octet-stream',
       size: file.size,
       width: null,
@@ -731,11 +748,52 @@ export function createDemoBackend(): DemoBackend {
     state.attachments.set(id, { meta, file })
     return c.json(meta, 201)
   })
-  app.get('/api/files/:id', (c) => {
-    const attachment = state.attachments.get(c.req.param('id'))
+  app.get('/api/files/slugs', (c) => {
+    const slugs: Record<string, string> = {}
+    for (const { meta } of state.attachments.values()) {
+      if (meta.slug) slugs[meta.slug] = meta.id
+    }
+    return c.json({ slugs })
+  })
+  app.get('/api/files/:key', (c) => {
+    const attachment = state.attachments.get(c.req.param('key')) ?? null
     return attachment
       ? new Response(attachment.file, { headers: { 'Content-Type': attachment.meta.mime } })
       : apiError(404, 'not_found', 'Attachment not found')
+  })
+  app.patch('/api/files/:key', async (c) => {
+    const key = c.req.param('key')
+    const attachment = state.attachments.get(key) ?? findAttachmentBySlug(state, key) ?? null
+    if (!attachment) return apiError(404, 'not_found', 'Attachment not found')
+    const body = await jsonBody(c.req.raw)
+    const slug = body.slug === null ? null : typeof body.slug === 'string' ? body.slug : attachment.meta.slug
+    if (slug !== null && !isValidAttachmentSlug(slug)) {
+      return apiError(400, 'bad_request', 'The attachment name may only use lowercase letters, digits, dashes and underscores')
+    }
+    if (slug === attachment.meta.slug) {
+      return c.json({ ok: true as const, slug, token: slug ?? attachment.meta.id, rewritten: 0 })
+    }
+    if (slug !== null) {
+      const taken = findAttachmentBySlug(state, slug)
+      if (taken && taken.meta.id !== attachment.meta.id) {
+        return apiError(409, 'conflict', 'This name is already in use')
+      }
+    }
+    const token = slug ?? attachment.meta.id
+    const previousUrl = attachment.meta.url
+    let rewritten = 0
+    for (const note of state.notes.values()) {
+      let content = replaceAttachmentUrls(note.content, attachment.meta.slug ?? attachment.meta.id, token)
+      content = content.replaceAll(previousUrl, `/api/files/${token}`)
+      if (content === note.content) continue
+      state.notes.set(note.id, refreshNote({ ...note, rev: note.rev + 1, updatedAt: Date.now() }, content))
+      rewritten++
+    }
+    if (previousUrl.startsWith('blob:')) revokeAttachment(previousUrl)
+    attachment.meta.slug = slug
+    attachment.meta.url = `/api/files/${attachment.meta.id}`
+    state.cursor++
+    return c.json({ ok: true as const, slug, token, rewritten })
   })
   app.delete('/api/files/:id', (c) => {
     const attachment = state.attachments.get(c.req.param('id'))
@@ -837,9 +895,17 @@ export function createDemoBackend(): DemoBackend {
     const note = state.notes.get(share.info.noteId)
     if (!note || note.deletedAt !== null) return apiError(404, 'not_found', 'Shared note not found')
     share.info = { ...share.info, views: share.info.views + 1 }
+    const slugMap = new Map<string, string>()
+    for (const { meta } of state.attachments.values()) {
+      if (meta.slug) slugMap.set(meta.slug, meta.id)
+    }
+    const content = resolveAttachmentReferences(
+      note.content,
+      (slug) => slugMap.get(slug) ?? null,
+    ).content
     const response: PublicNote = {
       title: note.title,
-      content: note.content,
+      content,
       updatedAt: note.updatedAt,
       createdAt: note.createdAt,
       author: { name: state.user.name, avatarUrl: state.user.avatarUrl },
@@ -1217,14 +1283,24 @@ function folderDescendants(state: DemoState, rootId: string): Set<string> {
   return ids
 }
 
+function findAttachmentBySlug(state: DemoState, slug: string): DemoAttachment | null {
+  for (const attachment of state.attachments.values()) {
+    if (attachment.meta.slug === slug) return attachment
+  }
+  return null
+}
+
 function attachmentReferenceCounts(state: DemoState): Map<string, number> {
   const references = new Map<string, number>()
   for (const note of state.notes.values()) {
-    for (const id of extractAttachmentIds(note.content)) {
-      if (!state.attachments.has(id)) continue
-      references.set(id, (references.get(id) ?? 0) + 1)
+    for (const token of extractAttachmentReferences(note.content)) {
+      const attachment = state.attachments.get(token)
+        ?? (isValidAttachmentSlug(token) ? findAttachmentBySlug(state, token) : null)
+      if (!attachment) continue
+      references.set(token, (references.get(token) ?? 0) + 1)
     }
     for (const attachment of state.attachments.values()) {
+      if (attachment.meta.url.startsWith('/api/files/')) continue
       if (!note.content.includes(attachment.meta.url)) continue
       references.set(attachment.meta.id, (references.get(attachment.meta.id) ?? 0) + 1)
     }
@@ -1464,7 +1540,7 @@ async function importBundle(
     }
     const folderId = typeof raw.folderId === 'string' ? folderMap.get(raw.folderId) ?? null : null
     let content = raw.content
-    for (const sourceId of extractAttachmentIds(content)) {
+    for (const sourceId of extractAttachmentReferences(content)) {
       const url = importedAttachments.urls.get(sourceId)
       if (url) content = content.replaceAll(`/api/files/${sourceId}`, url)
     }
@@ -1602,6 +1678,7 @@ async function importBundleAttachments(
           id: item.id,
           noteId: null,
           filename: item.filename,
+          slug: null,
           mime: item.mime,
           size: file.size,
           width: item.width,

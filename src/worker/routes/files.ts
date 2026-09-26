@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { LIMITS } from '@shared/constants'
-import { extractAttachmentIds } from '@shared/markdown-utils'
+import { extractAttachmentReferences, isValidAttachmentSlug } from '@shared/markdown-utils'
 import type { Attachment } from '@shared/types'
 import {
   hasAttachmentStorage,
@@ -13,12 +13,14 @@ import {
   attachmentObjectKey,
   type AttachmentObjectStorage,
 } from '../attachments/keys'
+import { rewriteAttachmentReferences } from '../attachments/rename'
 import { persistAttachmentWithinQuota } from '../attachments/storage'
 import type { AppBindings } from '../env'
 import { ApiError } from '../lib/errors'
 import { isValidId, isValidSlug, newId } from '../lib/id'
 import { isInlineSafe } from '../lib/image'
-import { FORM_BODY_LIMITS, readFormDataWithinLimit } from '../lib/request'
+import { broadcastCursor, scheduleFtsDrain } from '../lib/notify'
+import { FORM_BODY_LIMITS, JSON_BODY_LIMITS, readFormDataWithinLimit, readJson } from '../lib/request'
 import { consumeAttemptBudget, ThrottleError } from '../lib/throttle'
 import { shareAssetCookieName, verifyShareAssetSession } from '../lib/share-asset-session'
 import { requireAuth } from '../middleware/auth'
@@ -30,6 +32,7 @@ interface AttachmentRow {
   user_id: string
   note_id: string | null
   filename: string
+  slug: string | null
   mime: string
   size: number
   width: number | null
@@ -62,6 +65,7 @@ function toAttachment(row: AttachmentRow): Attachment {
     id: row.id,
     noteId: row.note_id,
     filename: row.filename,
+    slug: row.slug,
     mime: row.mime,
     size: row.size,
     width: row.width,
@@ -74,10 +78,10 @@ function toAttachment(row: AttachmentRow): Attachment {
 async function collectAttachmentReferences(
   db: D1Database,
   userId: string,
-  wantedIds?: ReadonlySet<string>,
+  wantedTokens?: ReadonlySet<string>,
 ): Promise<Map<string, number>> {
   const references = new Map<string, number>()
-  if (wantedIds?.size === 0) return references
+  if (wantedTokens?.size === 0) return references
 
   let afterId = ''
   while (true) {
@@ -88,9 +92,9 @@ async function collectAttachmentReferences(
     if (!results.length) break
 
     for (const note of results) {
-      for (const id of extractAttachmentIds(note.content)) {
-        if (wantedIds && !wantedIds.has(id)) continue
-        references.set(id, (references.get(id) ?? 0) + 1)
+      for (const token of extractAttachmentReferences(note.content)) {
+        if (wantedTokens && !wantedTokens.has(token)) continue
+        references.set(token, (references.get(token) ?? 0) + 1)
       }
     }
     afterId = results[results.length - 1]!.id
@@ -99,17 +103,17 @@ async function collectAttachmentReferences(
   return references
 }
 
-async function collectAttachmentIdsThroughBoundary(
+async function collectAttachmentTokensThroughBoundary(
   db: D1Database,
   userId: string,
   boundary: { created_at: number; id: string },
 ): Promise<Set<string>> {
-  const ids = new Set<string>()
+  const tokens = new Set<string>()
   let cursor: { createdAt: number; id: string } | null = null
   while (true) {
     const query: D1PreparedStatement = cursor
       ? db.prepare(
-          `SELECT created_at, id FROM attachments WHERE user_id = ?1
+          `SELECT created_at, id, slug FROM attachments WHERE user_id = ?1
             AND (created_at < ?2 OR (created_at = ?2 AND id <= ?3))
             AND (created_at > ?4 OR (created_at = ?4 AND id > ?5))
            ORDER BY created_at ASC, id ASC LIMIT ?6`,
@@ -122,21 +126,25 @@ async function collectAttachmentIdsThroughBoundary(
           ATTACHMENT_SCAN_PAGE_SIZE,
         )
       : db.prepare(
-          `SELECT created_at, id FROM attachments WHERE user_id = ?1
+          `SELECT created_at, id, slug FROM attachments WHERE user_id = ?1
             AND (created_at < ?2 OR (created_at = ?2 AND id <= ?3))
            ORDER BY created_at ASC, id ASC LIMIT ?4`,
         ).bind(userId, boundary.created_at, boundary.id, ATTACHMENT_SCAN_PAGE_SIZE)
-    const rows: Array<{ created_at: number; id: string }> = (await query.all<{
+    const rows: Array<{ created_at: number; id: string; slug: string | null }> = (await query.all<{
       created_at: number
       id: string
+      slug: string | null
     }>()).results
     if (!rows.length) break
-    for (const row of rows) ids.add(row.id)
+    for (const row of rows) {
+      tokens.add(row.id)
+      if (row.slug !== null) tokens.add(row.slug)
+    }
     const last = rows[rows.length - 1]!
     cursor = { createdAt: last.created_at, id: last.id }
     if (rows.length < ATTACHMENT_SCAN_PAGE_SIZE) break
   }
-  return ids
+  return tokens
 }
 
 
@@ -174,6 +182,11 @@ filesRoutes.post('/', requireAuth, async (c) => {
   const id = newId()
   const rawNoteId = form.get('noteId')
   const noteId = typeof rawNoteId === 'string' && rawNoteId ? rawNoteId.slice(0, 128) : null
+  const rawSlug = form.get('slug')
+  const slug = typeof rawSlug === 'string' && rawSlug ? rawSlug : null
+  if (slug !== null && !isValidAttachmentSlug(slug)) {
+    throw ApiError.badRequest('The attachment name may only use lowercase letters, digits, dashes and underscores')
+  }
   if (noteId) {
     const owned = await c.env.DB.prepare(
       `SELECT id FROM notes WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`,
@@ -188,6 +201,7 @@ filesRoutes.post('/', requireAuth, async (c) => {
     userId,
     noteId,
     filename: file.name || 'file',
+    slug,
     reportedMime: file.type,
     bytes,
     createdAt: now,
@@ -197,6 +211,7 @@ filesRoutes.post('/', requireAuth, async (c) => {
     id,
     noteId,
     filename: stored.filename,
+    slug: stored.slug,
     mime: stored.mime,
     size: bytes.byteLength,
     width: stored.width,
@@ -208,16 +223,27 @@ filesRoutes.post('/', requireAuth, async (c) => {
 })
 
 
-filesRoutes.get('/:id', async (c) => {
-  const id = c.req.param('id')
-  if (!isValidId(id)) throw ApiError.notFound('Attachment not found')
+filesRoutes.get('/slugs', requireAuth, async (c) => {
+  const userId = c.get('userId')
+  const { results } = await c.env.DB.prepare(
+    `SELECT slug, id FROM attachments WHERE user_id = ?1 AND slug IS NOT NULL ORDER BY created_at ASC`,
+  ).bind(userId).all<{ slug: string; id: string }>()
+  const slugs: Record<string, string> = {}
+  for (const row of results) slugs[row.slug] = row.id
+  return c.json({ slugs })
+})
+
+
+filesRoutes.get('/:key', async (c) => {
+  const key = c.req.param('key')
+  if (!isValidId(key)) throw ApiError.notFound('Attachment not found')
   const shareSlug = c.req.query('share')
 
   const row = await c.env.DB.prepare(
-    `SELECT id, user_id, note_id, filename, mime, size, width, height, storage, created_at
+    `SELECT id, user_id, note_id, filename, slug, mime, size, width, height, storage, created_at
        FROM attachments WHERE id = ?1`,
   )
-    .bind(id)
+    .bind(key)
     .first<AttachmentRow>()
   if (!row) throw ApiError.notFound('Attachment not found')
 
@@ -233,9 +259,21 @@ filesRoutes.get('/:id', async (c) => {
     )
       .bind(shareSlug, row.user_id, Date.now())
       .first<{ slug: string; password_hash: string | null; content: string }>()
+    let tokenIds = new Set<string>()
+    if (share) {
+      const shareTokens = extractAttachmentReferences(share.content)
+      tokenIds = new Set(shareTokens.filter(isValidId))
+      const slugTokens = [...new Set(shareTokens.filter((token) => !isValidId(token)))]
+      if (slugTokens.length) {
+        const slugRows = await c.env.DB.prepare(
+          `SELECT id FROM attachments WHERE user_id = ?1 AND slug IN (SELECT value FROM json_each(?2))`,
+        ).bind(row.user_id, JSON.stringify(slugTokens)).all<{ id: string }>()
+        for (const slugRow of slugRows.results) tokenIds.add(slugRow.id)
+      }
+    }
     allowed = Boolean(
       share &&
-        extractAttachmentIds(share.content).includes(row.id) &&
+        tokenIds.has(row.id) &&
         (!share.password_hash ||
           (await verifyShareAssetSession(
             c.env.DB,
@@ -267,33 +305,84 @@ filesRoutes.get('/:id', async (c) => {
 })
 
 
+filesRoutes.patch('/:key', requireAuth, async (c) => {
+  const userId = c.get('userId')
+  const key = c.req.param('key')
+  const byId = isValidId(key)
+  if (!byId && !isValidAttachmentSlug(key)) throw ApiError.notFound('Attachment not found')
+  const body = await readJson<{ slug: string | null }>(c, JSON_BODY_LIMITS.small)
+  if (body.slug !== null && !isValidAttachmentSlug(body.slug)) {
+    throw ApiError.badRequest('The attachment name may only use lowercase letters, digits, dashes and underscores')
+  }
+
+  const row = await c.env.DB.prepare(
+    `SELECT id, user_id, note_id, filename, slug, mime, size, width, height, storage, created_at
+       FROM attachments WHERE ${byId ? 'id' : 'slug'} = ?1 AND user_id = ?2`,
+  )
+    .bind(key, userId)
+    .first<AttachmentRow>()
+  if (!row) throw ApiError.notFound('Attachment not found')
+
+  if (body.slug === row.slug) {
+    return c.json({ ok: true, slug: row.slug, token: row.slug ?? row.id, rewritten: 0 })
+  }
+  if (body.slug !== null) {
+    const taken = await c.env.DB.prepare(
+      `SELECT 1 FROM attachments WHERE user_id = ?1 AND slug = ?2 AND id <> ?3`,
+    ).bind(userId, body.slug, row.id).first()
+    if (taken) throw ApiError.conflict('This name is already in use')
+  }
+  const updated = await c.env.DB.prepare(
+    `UPDATE attachments SET slug = ?1 WHERE id = ?2 AND user_id = ?3 AND slug IS ?4`,
+  ).bind(body.slug, row.id, userId, row.slug).run()
+  if (!updated.meta.changes) throw ApiError.conflict('This name is already in use')
+
+  let rewritten = 0
+  if (body.slug !== row.slug) {
+    const rewrite = await rewriteAttachmentReferences(
+      c.env.DB,
+      userId,
+      row.slug ?? row.id,
+      body.slug ?? row.id,
+      c.get('database').ftsEnabled,
+    )
+    rewritten = rewrite.rewritten
+  }
+  await broadcastCursor(c)
+  scheduleFtsDrain(c)
+  return c.json({ ok: true, slug: body.slug, token: body.slug ?? row.id, rewritten })
+})
+
+
 filesRoutes.get('/', requireAuth, async (c) => {
   const userId = c.get('userId')
   const cursor = parseAttachmentListCursor(c.req.query('cursor'))
   const statement = cursor
     ? c.env.DB.prepare(
-        `SELECT id, user_id, note_id, filename, mime, size, width, height, storage, created_at
+        `SELECT id, user_id, note_id, filename, slug, mime, size, width, height, storage, created_at
            FROM attachments WHERE user_id = ?1
             AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
           ORDER BY created_at DESC, id DESC LIMIT ?4`,
       ).bind(userId, cursor.createdAt, cursor.id, ATTACHMENT_LIST_PAGE_SIZE + 1)
     : c.env.DB.prepare(
-        `SELECT id, user_id, note_id, filename, mime, size, width, height, storage, created_at
+        `SELECT id, user_id, note_id, filename, slug, mime, size, width, height, storage, created_at
            FROM attachments WHERE user_id = ?1
           ORDER BY created_at DESC, id DESC LIMIT ?2`,
       ).bind(userId, ATTACHMENT_LIST_PAGE_SIZE + 1)
   const { results } = await statement.all<AttachmentRow>()
   const page = results.slice(0, ATTACHMENT_LIST_PAGE_SIZE)
   const hasMore = results.length > ATTACHMENT_LIST_PAGE_SIZE
-  const references = await collectAttachmentReferences(
-    c.env.DB,
-    userId,
-    new Set(page.map((row) => row.id)),
-  )
+  const wantedTokens = new Set<string>()
+  for (const row of page) {
+    wantedTokens.add(row.id)
+    if (row.slug !== null) wantedTokens.add(row.slug)
+  }
+  const references = await collectAttachmentReferences(c.env.DB, userId, wantedTokens)
   return c.json({
     files: page.map((row) => ({
       ...toAttachment(row),
-      references: references.get(row.id) ?? 0,
+      references:
+        (references.get(row.id) ?? 0) + (row.slug !== null ? references.get(row.slug) ?? 0 : 0),
     })),
     nextCursor: hasMore
       ? `${page[page.length - 1]!.created_at}.${page[page.length - 1]!.id}`
@@ -357,8 +446,8 @@ filesRoutes.post('/prune', requireAuth, async (c) => {
   const boundary = (boundaryResult as D1Result<{ created_at: number; id: string }>).results[0]
   if (!boundary) return c.json({ removed: 0, freedBytes: 0 })
   const scanCursor = (cursorResult as D1Result<{ seq: number }>).results[0]?.seq ?? 0
-  const attachmentIds = await collectAttachmentIdsThroughBoundary(c.env.DB, userId, boundary)
-  const referenced = await collectAttachmentReferences(c.env.DB, userId, attachmentIds)
+  const attachmentTokens = await collectAttachmentTokensThroughBoundary(c.env.DB, userId, boundary)
+  const referenced = await collectAttachmentReferences(c.env.DB, userId, attachmentTokens)
 
   let removed = 0
   let freedBytes = 0
@@ -385,7 +474,7 @@ filesRoutes.post('/prune', requireAuth, async (c) => {
   while (true) {
     const query: D1PreparedStatement = pageCursor
       ? c.env.DB.prepare(
-          `SELECT id, user_id, note_id, filename, mime, size, width, height, storage, created_at
+          `SELECT id, user_id, note_id, filename, slug, mime, size, width, height, storage, created_at
              FROM attachments WHERE user_id = ?1
               AND (created_at < ?2 OR (created_at = ?2 AND id <= ?3))
               AND (created_at > ?4 OR (created_at = ?4 AND id > ?5))
@@ -399,7 +488,7 @@ filesRoutes.post('/prune', requireAuth, async (c) => {
           ATTACHMENT_SCAN_PAGE_SIZE,
         )
       : c.env.DB.prepare(
-          `SELECT id, user_id, note_id, filename, mime, size, width, height, storage, created_at
+          `SELECT id, user_id, note_id, filename, slug, mime, size, width, height, storage, created_at
              FROM attachments WHERE user_id = ?1
               AND (created_at < ?2 OR (created_at = ?2 AND id <= ?3))
             ORDER BY created_at ASC, id ASC LIMIT ?4`,
@@ -408,7 +497,7 @@ filesRoutes.post('/prune', requireAuth, async (c) => {
     if (!files.length) break
 
     for (const file of files) {
-      if (referenced.has(file.id)) continue
+      if (referenced.has(file.id) || (file.slug !== null && referenced.has(file.slug))) continue
       const guard = `id = ?1 AND user_id = ?2 AND NOT EXISTS (
         SELECT 1 FROM changes c
          WHERE c.user_id = ?2 AND c.entity = 'note' AND c.seq > ?3
