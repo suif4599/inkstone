@@ -1,5 +1,5 @@
 import { LIMITS } from '@shared/constants'
-import { parseFrontMatter } from '@shared/markdown-utils'
+import { isValidAttachmentSlug, parseFrontMatter } from '@shared/markdown-utils'
 import { organizerColorOrNull } from '@shared/organizer-colors'
 import type { BackupRun } from '@shared/types'
 import { stringify as stringifyYaml } from 'yaml'
@@ -751,13 +751,14 @@ export async function listMcpAttachments(
   const limit = Math.max(1, Math.min(50, input.limit ?? 20))
   const cursor = Math.max(0, Math.trunc(input.cursor ?? 0))
   const { results } = await db.prepare(
-    `SELECT id, note_id, filename, mime, size, width, height, created_at
+    `SELECT id, note_id, filename, slug, mime, size, width, height, created_at
        FROM attachments WHERE user_id = ?1 AND (?2 IS NULL OR note_id = ?2)
       ORDER BY created_at DESC, id DESC LIMIT ?3 OFFSET ?4`,
   ).bind(userId, input.noteId ?? null, limit + 1, cursor).all<{
     id: string
     note_id: string | null
     filename: string
+    slug: string | null
     mime: string
     size: number
     width: number | null
@@ -769,6 +770,7 @@ export async function listMcpAttachments(
       id: row.id,
       note_id: row.note_id,
       filename: row.filename,
+      slug: row.slug,
       mime: row.mime,
       size: row.size,
       width: row.width,
@@ -827,12 +829,16 @@ export async function uploadMcpAttachment(
     attachmentId?: string
     noteId?: string | null
     filename: string
+    slug?: string | null
     mime: string
     base64: string
   },
 ) {
   const id = input.attachmentId ?? newId()
   if (!isValidId(id)) throw ApiError.badRequest('attachment_id must be a valid Inkstone id')
+  if (input.slug != null && !isValidAttachmentSlug(input.slug)) {
+    throw ApiError.badRequest('slug may only use lowercase letters, digits, dashes and underscores')
+  }
   if (input.noteId) await requireOwnedNote(context.env.DB, context.userId, input.noteId)
   let bytes: Uint8Array
   try {
@@ -851,16 +857,18 @@ export async function uploadMcpAttachment(
     recover: async () => {
       const row = await loadAttachmentMeta(context.env.DB, context.userId, id)
       if (!row || row.note_id !== (input.noteId ?? null) || row.filename !== input.filename
-        || row.size !== bytes.byteLength || row.sha256 !== digest) return null
+        || row.size !== bytes.byteLength || row.sha256 !== digest
+        || (row.slug ?? null) !== (input.slug ?? null)) return null
       return {
         id: row.id,
         note_id: row.note_id,
         filename: row.filename,
+        slug: row.slug ?? null,
         mime: row.mime,
         size: row.size,
         width: row.width,
         height: row.height,
-        markdown: `![${row.filename}](/api/files/${row.id})`,
+        markdown: `![${row.filename}](${row.slug ? `<${row.slug}>` : `/api/files/${row.id}`})`,
       }
     },
     execute: async () => {
@@ -889,6 +897,7 @@ export async function uploadMcpAttachment(
         userId: context.userId,
         noteId: input.noteId ?? null,
         filename: input.filename,
+        slug: input.slug ?? null,
         reportedMime: input.mime,
         bytes,
         createdAt: Date.now(),
@@ -897,11 +906,12 @@ export async function uploadMcpAttachment(
         id: stored.id,
         note_id: stored.noteId,
         filename: stored.filename,
+        slug: stored.slug,
         mime: stored.mime,
         size: stored.size,
         width: stored.width,
         height: stored.height,
-        markdown: `![${stored.filename}](/api/files/${stored.id})`,
+        markdown: `![${stored.filename}](${stored.slug ? `<${stored.slug}>` : `/api/files/${stored.id}`})`,
       }
     },
   })
@@ -1091,12 +1101,13 @@ async function loadTagOrNull(db: D1Database, userId: string, id: string) {
 
 async function loadAttachmentMeta(db: D1Database, userId: string, id: string) {
   return db.prepare(
-    `SELECT id, note_id, filename, mime, size, sha256, width, height, created_at
+    `SELECT id, note_id, filename, slug, mime, size, sha256, width, height, created_at
        FROM attachments WHERE id = ?1 AND user_id = ?2`,
   ).bind(id, userId).first<{
     id: string
     note_id: string | null
     filename: string
+    slug: string | null
     mime: string
     size: number
     sha256: string

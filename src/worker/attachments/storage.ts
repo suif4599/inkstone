@@ -26,6 +26,7 @@ export interface PersistAttachmentInput {
   userId: string
   noteId: string | null
   filename: string
+  slug?: string | null
   reportedMime: string
   bytes: Uint8Array
   createdAt: number
@@ -36,6 +37,7 @@ export interface PersistedAttachment {
   userId: string
   noteId: string | null
   filename: string
+  slug: string | null
   mime: string
   size: number
   width: number | null
@@ -60,6 +62,12 @@ export async function persistAttachmentWithinQuota(
     ).bind(input.userId).first<{ bytes: number }>()
     if ((usage?.bytes ?? 0) + input.bytes.byteLength > LIMITS.attachmentQuotaBytes) {
       throw ApiError.tooLarge('The account attachment quota has been reached')
+    }
+    if (input.slug) {
+      const taken = await env.DB.prepare(
+        `SELECT 1 FROM attachments WHERE user_id = ?1 AND slug = ?2`,
+      ).bind(input.userId, input.slug).first()
+      if (taken) throw ApiError.conflict('This name is already in use')
     }
     return await persistAttachment(env, input)
   } finally {
@@ -114,14 +122,15 @@ export async function persistAttachment(
 
   try {
     await env.DB.prepare(
-      `INSERT INTO attachments (id, user_id, note_id, filename, mime, size, sha256, width, height, storage, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+      `INSERT INTO attachments (id, user_id, note_id, filename, slug, mime, size, sha256, width, height, storage, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
     )
       .bind(
         input.id,
         input.userId,
         input.noteId,
         filename,
+        input.slug ?? null,
         mime,
         input.bytes.byteLength,
         sha256,
@@ -154,6 +163,7 @@ export async function persistAttachment(
     userId: input.userId,
     noteId: input.noteId,
     filename,
+    slug: input.slug ?? null,
     mime,
     size: input.bytes.byteLength,
     width: dimensions?.width ?? null,

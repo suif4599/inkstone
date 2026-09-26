@@ -5,10 +5,11 @@ import { t } from "../lib/i18n";
 
 
 export interface PasteHandlers {
-    uploadFile: (file: File) => Promise<{
+    uploadFile: (file: File, slug?: string) => Promise<{
         url: string;
         filename: string;
         isImage: boolean;
+        slug?: string | null;
     } | null>;
     replaceDetachedUpload?: (placeholder: string, replacement: string) => void;
 }
@@ -135,9 +136,10 @@ export function uploadedFileMarkdown(result: {
     url: string;
     filename: string;
     isImage: boolean;
+    slug?: string | null;
 }): string {
     const label = escapeMarkdownLabel(result.isImage ? stripExt(result.filename) : result.filename);
-    return markdownLink(label, result.url, result.isImage, true);
+    return markdownLink(label, result.slug || result.url, result.isImage, true);
 }
 function stripExt(name: string): string {
     const dot = name.lastIndexOf('.');

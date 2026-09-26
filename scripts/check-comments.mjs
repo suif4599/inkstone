@@ -42,7 +42,6 @@ const allowed = new Map([
     "// md-example fences are rendered as live markdown by the client renderer,",
     "// so references inside them count even though stripCodeRegions discards",
     "// them as ordinary code regions.",
-    "// A closing fence may only be followed by spaces or tabs.",
   ]],
   ["src/worker/backup/snapshot.ts", [
     "/** Produces restorable JSON, readable Markdown, and attachment files for every backup target. */",

@@ -1,4 +1,5 @@
 import { renderMarkdown } from './markdown/renderer'
+import { useAttachmentSlugs } from '../store/attachment-slugs'
 
 const KATEX_CSS_URL = 'https://cdn.jsdelivr.net/npm/katex@0.18.1/dist/katex.min.css'
 
@@ -21,16 +22,22 @@ export function exportNoteAsMarkdown(note: { title: string; content: string }): 
 }
 
 export async function exportNoteAsHtml(note: { title: string; content: string }, language: string): Promise<void> {
-  const rendered = renderMarkdown(note.content)
+  const rendered = renderMarkdown(await resolvedContent(note.content))
   const body = await inlinePrivateImages(rendered.html)
   downloadTextFile(`${safeFileName(note.title) || 'note'}.html`, htmlDocument(note.title, body, language), 'text/html;charset=utf-8')
 }
 
 export async function exportNoteAsPdf(note: { title: string; content: string }, language: string): Promise<void> {
-  const rendered = renderMarkdown(note.content)
+  const rendered = renderMarkdown(await resolvedContent(note.content))
   const body = await inlinePrivateImages(rendered.html)
   const html = htmlDocument(note.title, body, language)
   await printHtml(html)
+}
+
+async function resolvedContent(content: string): Promise<string> {
+  const store = useAttachmentSlugs.getState()
+  await store.ensure()
+  return store.resolve(content).content
 }
 
 async function printHtml(html: string): Promise<void> {

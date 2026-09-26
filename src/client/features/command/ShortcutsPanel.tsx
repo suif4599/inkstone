@@ -33,6 +33,7 @@ export function ShortcutsPanel({ onClose }: {
         map.set(t("common.edit"), [
             ...(map.get(t("common.edit")) ?? []),
             ...EDITOR_SHORTCUTS.map((item) => ({ combo: item.combo, description: t(item.label, item.level ? { value0: item.level } : undefined) })),
+            { combo: 'alt+r', description: t('editor.rename_attachment') },
         ]);
         map.set(t('command.note_list'), [
             { combo: 'arrowup', description: t('command.navigate_notes') },

@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileText, Sparkles, Trash2 } from 'lucide-react';
+import { FileText, Pencil, Sparkles, Trash2 } from 'lucide-react';
 import type { AttachmentWithUsage } from '@shared/types';
+import { isValidAttachmentSlug } from '@shared/markdown-utils';
 import { cn } from '../../lib/cn';
-import { api } from '../../lib/api';
+import { api, ApiError } from '../../lib/api';
 import { formatBytes } from '../../lib/time';
 import { Button, IconButton } from '../../components/primitives';
 import { LoadingBlock } from '../../components/feedback';
-import { Segmented } from '../../components/form';
-import { Drawer, Tooltip, confirm } from '../../components/overlay';
+import { Input, Segmented } from '../../components/form';
+import { Drawer, Tooltip, confirm, useEscape } from '../../components/overlay';
 import { useUi } from '../../store/ui';
 import { t } from "../../lib/i18n";
+import { applyAttachmentRename } from './rename';
 
 type FilterKind = 'all' | 'image' | 'document' | 'other';
 
@@ -24,6 +26,7 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
     const [filter, setFilter] = useState<FilterKind>('all');
     const [busy, setBusy] = useState(false);
     const [loadingMore, setLoadingMore] = useState(false);
+    const [renamingId, setRenamingId] = useState<string | null>(null);
     const loadEpoch = useRef(0);
     const toast = useUi((s) => s.toast);
     const loadPage = useCallback(async (cursor: string | undefined, epoch: number, signal?: AbortSignal) => {
@@ -118,6 +121,47 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
             setBusy(false);
         }
     };
+    const submitRename = async (file: AttachmentWithUsage, value: string) => {
+        const trimmed = value.trim();
+        if (trimmed === (file.slug ?? '')) {
+            setRenamingId(null);
+            return;
+        }
+        if (trimmed && !isValidAttachmentSlug(trimmed)) {
+            toast({ title: t("attachments.slug_invalid"), tone: 'danger' });
+            setRenamingId(null);
+            return;
+        }
+        setBusy(true);
+        try {
+            const key = file.slug ?? file.id;
+            const response = await api.files.rename(key, trimmed || null);
+            setFiles((prev) => prev?.map((item) => item.id === file.id
+                ? { ...item, slug: response.slug, url: `/api/files/${file.id}` }
+                : item) ?? null);
+            const refreshed = await applyAttachmentRename(key, response.token);
+            toast({
+                title: response.slug
+                    ? t("attachments.renamed_value0", { value0: response.slug })
+                    : t("attachments.slug_cleared"),
+                description: refreshed ? t("attachments.updated_note_bodies_value0", { value0: response.rewritten }) : undefined,
+                tone: refreshed ? 'success' : 'warning',
+            });
+        }
+        catch (err) {
+            toast({
+                title: err instanceof ApiError && err.isConflict
+                    ? t("attachments.slug_taken")
+                    : t("attachments.rename_failed"),
+                description: err instanceof Error ? err.message : String(err),
+                tone: 'danger',
+            });
+        }
+        finally {
+            setRenamingId(null);
+            setBusy(false);
+        }
+    };
     const runCleanup = async () => {
         if (busy || loadingMore)
             return;
@@ -191,7 +235,12 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
                         <FileText size={26}/>
                         <span className="max-w-[80%] truncate text-[10px]">{file.filename}</span>
                       </div>)}
-                    <div className="absolute top-1.5 right-1.5 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+                    <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+                      <Tooltip label={t("attachments.rename")} side="left">
+                        <IconButton label={t("attachments.rename")} size="sm" disabled={busy || loadingMore} onClick={() => setRenamingId(file.id)} className="border border-[var(--border-default)] bg-[var(--bg-overlay)] shadow-[var(--shadow-pop)]">
+                          <Pencil size={13}/>
+                        </IconButton>
+                      </Tooltip>
                       <Tooltip label={t("attachments.delete")} side="left">
                         <IconButton label={t("attachments.delete")} size="sm" disabled={busy || loadingMore} onClick={() => void removeFile(file)} className="border border-[var(--border-default)] bg-[var(--bg-overlay)] shadow-[var(--shadow-pop)] hover:text-[var(--danger)]">
                           <Trash2 size={13}/>
@@ -203,6 +252,11 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
                     <div className="truncate text-[11.5px] text-[var(--text-secondary)]">
                       {file.filename}
                     </div>
+                    {renamingId === file.id ? (<SlugEditor initial={file.slug ?? ''} busy={busy} onSubmit={(value) => void submitRename(file, value)} onCancel={() => setRenamingId(null)}/>) : file.slug ? (<div className="truncate font-mono text-[10.5px] text-[var(--accent)]">
+                        {'<'}
+                        {file.slug}
+                        {'>'}
+                      </div>) : null}
                     <div className={cn('flex items-center gap-1 text-[10.5px]', file.references > 0 ? 'text-[var(--text-quaternary)]' : 'text-[var(--warning)]')}>
                       <span className="tabular">{formatBytes(file.size)}</span>
                       <span aria-hidden="true">·</span>
@@ -230,4 +284,30 @@ export function AttachmentManager({ open, onClose, onChanged, }: {
         </div>
       </div>
     </Drawer>);
+}
+
+function SlugEditor({ initial, busy, onSubmit, onCancel }: {
+    initial: string;
+    busy: boolean;
+    onSubmit: (value: string) => void;
+    onCancel: () => void;
+}) {
+    const [value, setValue] = useState(initial);
+    const doneRef = useRef(false);
+    const submit = () => {
+        if (doneRef.current)
+            return;
+        doneRef.current = true;
+        onSubmit(value.trim());
+    };
+    useEscape(true, () => {
+        doneRef.current = true;
+        onCancel();
+    });
+    return (<Input value={value} maxLength={64} autoFocus placeholder={t("attachments.slug_placeholder")} disabled={busy} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                submit();
+            }
+        }} onBlur={submit}/>);
 }

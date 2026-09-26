@@ -1,4 +1,4 @@
-import { extractAttachmentIds } from '@shared/markdown-utils'
+import { extractAttachmentReferences } from '@shared/markdown-utils'
 
 const REFERENCE_SCAN_PAGE_SIZE = 10
 
@@ -21,7 +21,7 @@ export async function collectAttachmentReferences(
       if (!results.length) break
 
       for (const note of results) {
-        for (const id of extractAttachmentIds(note.content)) {
+        for (const id of extractAttachmentReferences(note.content)) {
           if (wantedIds && !wantedIds.has(id)) continue
           references.set(id, (references.get(id) ?? 0) + 1)
         }
