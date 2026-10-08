@@ -512,6 +512,10 @@ function attachmentDestinationReplaceRegExp(from: string): RegExp {
   return new RegExp(`(\\]\\([ \\t]*<)${escapeRegExp(from)}(?=>)`, 'g')
 }
 
+function attachmentUrlDestinationReplaceRegExp(from: string): RegExp {
+  return new RegExp(`(\\]\\([ \\t]*<)/api/files/${escapeRegExp(from)}(?=>)`, 'g')
+}
+
 function attachmentDestinationFor(to: string): string {
   return isValidAttachmentSlug(to) ? to : `/api/files/${to}`
 }
@@ -568,6 +572,7 @@ export function replaceAttachmentUrls(content: string, from: string, to: string)
     (line) =>
       replaceOutsideInlineCode(line, (segment) =>
         segment
+          .replace(attachmentUrlDestinationReplaceRegExp(from), (_whole, lead: string) => `${lead}${destination}`)
           .replace(attachmentUrlReplaceRegExp(from), (_whole, lead: string) => `${lead}/api/files/${to}`)
           .replace(attachmentDestinationReplaceRegExp(from), (_whole, lead: string) => `${lead}${destination}`),
       ),

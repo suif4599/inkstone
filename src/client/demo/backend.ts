@@ -1422,7 +1422,11 @@ async function exportResponse(state: DemoState, format: 'json' | 'zip'): Promise
   const notes = [...state.notes.values()].map((note) => ({
     ...note,
     content: storedAttachments.reduce(
-      (content, attachment) => content.replaceAll(attachment.meta.url, `/api/files/${attachment.meta.id}`),
+      (content, attachment) => replaceAttachmentUrls(
+        content.replaceAll(attachment.meta.url, `/api/files/${attachment.meta.id}`),
+        attachment.meta.slug ?? attachment.meta.id,
+        attachment.meta.id,
+      ),
       note.content,
     ),
   }))

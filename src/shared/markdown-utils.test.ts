@@ -147,7 +147,12 @@ describe('replaceAttachmentUrls', () => {
 
   it('rewrites id references to the slug form when a slug is assigned', () => {
     expect(replaceAttachmentUrls(`![a](/api/files/${idA}) and ![b](</api/files/${idA}>)`, idA, 'photo'))
-      .toBe('![a](/api/files/photo) and ![b](</api/files/photo>)')
+      .toBe('![a](/api/files/photo) and ![b](<photo>)')
+  })
+
+  it('collapses angle-bracket url destinations to the bare token form', () => {
+    expect(replaceAttachmentUrls('![100px|.wide](</api/files/photo>) tail', 'photo', 'next'))
+      .toBe('![100px|.wide](<next>) tail')
   })
 
   it('skips bare slug tokens inside fenced code and inline code', () => {
