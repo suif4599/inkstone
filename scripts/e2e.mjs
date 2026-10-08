@@ -1198,9 +1198,10 @@ if (noteId) {
     const reassigned = await owner.req('PATCH', `/api/files/${attachment.id}`, { slug: 'e2e-assigned' })
     const afterAssign = await owner.req('GET', `/api/notes/${noteId}`)
     check(
-      'assigning a slug rewrites id-form references to the slug',
+      'assigning a slug rewrites id-form references to the bare slug token',
       reassigned.status === 200 && reassigned.data?.rewritten >= 1 && afterAssign.status === 200 &&
-        afterAssign.data?.content.includes('</api/files/e2e-assigned>') &&
+        afterAssign.data?.content.includes('<e2e-assigned>') &&
+        !afterAssign.data?.content.includes('</api/files/e2e-assigned>') &&
         !afterAssign.data?.content.includes(`</api/files/${attachment.id}>`),
       `assign=${reassigned.status} rewritten=${reassigned.data?.rewritten}`,
     )
