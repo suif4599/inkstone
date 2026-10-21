@@ -2,6 +2,7 @@ export function mdcssPre(source) {
   let markdown = source;
   let __mdcssHasIndent;
   let mappers;
+  globalThis.__MDCSS_ORIGINAL_MARKDOWN__ = markdown;
   globalThis.__MDCSS_LINE_SHIFTS__ = [];
   globalThis.__mdcssRecordShift = function(origLine, delta) {
     if (delta) {
@@ -22,39 +23,248 @@ export function mdcssPre(source) {
     }
     return cur - cum;
   };
-  __mdcssHasIndent = false;
-  if (markdown.trimStart().startsWith('@indent')) {
-    markdown = markdown.trimStart().slice('@indent'.length);
-    __mdcssHasIndent = true;
-  } else if (markdown.trimStart().startsWith('<indent>')) {
-    markdown = markdown.trimStart().slice('<indent>'.length);
-    __mdcssHasIndent = true;
+  globalThis.__mdcssRecordLineDiff = function(original, transformed) {
+    const A = original.split("\n");
+    const B = transformed.split("\n");
+    const countA = new Map();
+    const countB = new Map();
+    for (const l of A) countA.set(l, (countA.get(l) || 0) + 1);
+    for (const l of B) countB.set(l, (countB.get(l) || 0) + 1);
+    const posA = new Map();
+    for (let i = 0; i < A.length; i += 1) {
+      if (countA.get(A[i]) === 1) posA.set(A[i], i);
+    }
+    const cands = [];
+    for (let j = 0; j < B.length; j += 1) {
+      const i = posA.get(B[j]);
+      if (i !== undefined && countB.get(B[j]) === 1) cands.push([i, j]);
+    }
+    const lis = [];
+    const pred = new Array(cands.length).fill(-1);
+    for (let c = 0; c < cands.length; c += 1) {
+      let lo = 0,
+        hi = lis.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cands[lis[mid]][0] < cands[c][0]) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo > 0) pred[c] = lis[lo - 1];
+      if (lo < lis.length) lis[lo] = c;
+      else lis.push(c);
+    }
+    const anchors = [];
+    for (let c = lis.length ? lis[lis.length - 1] : -1; c !== -1; c = pred[c]) {
+      anchors.push(cands[c]);
+    }
+    anchors.reverse();
+    let pa = 0,
+      pb = 0;
+    for (const anchor of anchors) {
+      __mdcssDiffSegment(A, B, pa, anchor[0], pb, anchor[1]);
+      pa = anchor[0] + 1;
+      pb = anchor[1] + 1;
+    }
+    __mdcssDiffSegment(A, B, pa, A.length, pb, B.length);
+  };
+
+  function __mdcssDiffSegment(A, B, a0, a1, b0, b1) {
+    const N = a1 - a0,
+      M = b1 - b0;
+    const off = N + M;
+    if (off === 0) return;
+    const V = new Array(2 * off + 1).fill(0);
+    const trace = [];
+    let total = off;
+    search:
+      for (let d = 0; d <= off; d += 1) {
+        for (let k = -d; k <= d; k += 2) {
+          let x;
+          if (k === -d || (k !== d && V[off + k - 1] < V[off + k + 1])) {
+            x = V[off + k + 1];
+          } else {
+            x = V[off + k - 1] + 1;
+          }
+          let y = x - k;
+          while (x < N && y < M && A[a0 + x] === B[b0 + y]) {
+            x += 1;
+            y += 1;
+          }
+          V[off + k] = x;
+          if (x >= N && y >= M) {
+            total = d;
+            trace.push(V.slice());
+            break search;
+          }
+        }
+        trace.push(V.slice());
+      }
+    const ops = [];
+    let x = N,
+      y = M;
+    for (let d = total; d > 0; d -= 1) {
+      const Vp = trace[d - 1];
+      const k = x - y;
+      const prevK = (k === -d || (k !== d && Vp[off + k - 1] < Vp[off + k + 1])) ? k + 1 : k - 1;
+      const prevX = Vp[off + prevK];
+      const prevY = prevX - prevK;
+      while (x > prevX && y > prevY) {
+        ops.push(0);
+        x -= 1;
+        y -= 1;
+      }
+      if (x === prevX) {
+        ops.push(2);
+        y -= 1;
+      } else {
+        ops.push(1);
+        x -= 1;
+      }
+    }
+    while (x > 0 && y > 0) {
+      ops.push(0);
+      x -= 1;
+      y -= 1;
+    }
+    ops.reverse();
+    let a = a0,
+      b = b0,
+      ha = -1,
+      del = 0,
+      ins = 0;
+    const flush = () => {
+      if (ha >= 0 && del !== ins && ha + del < A.length) {
+        globalThis.__mdcssRecordShift(ha + del + 1, ins - del);
+      }
+      ha = -1;
+      del = 0;
+      ins = 0;
+    };
+    for (const op of ops) {
+      if (op === 0) {
+        flush();
+        a += 1;
+        b += 1;
+      } else {
+        if (ha < 0) ha = a;
+        if (op === 1) {
+          del += 1;
+          a += 1;
+        } else {
+          ins += 1;
+          b += 1;
+        }
+      }
+    }
+    flush();
   }
-  if (__mdcssHasIndent) {
-    globalThis.__mdcssRecordShift(1, 2);
+  const __mdcssHead = markdown.trimStart();
+  if (__mdcssHead.startsWith("@indent") || __mdcssHead.startsWith("<indent>")) {
+    const __mdcssFlag = __mdcssHead.startsWith("@indent") ? "@indent" : "<indent>";
     markdown = `<div class="has-indent">
 
-${markdown}
+${__mdcssHead.slice(__mdcssFlag.length)}
 
 </div>
 
 `;
   }
   const __MDCSS_FENCE_TOKEN_PREFIX__ = "@@MDCSS_FENCE_BLOCK_";
-  const __MDCSS_FENCE_TOKEN_SUFFIX__ = "@@";
-  const __MDCSS_FENCED_BLOCKS__ = [];
+  globalThis.__MDCSS_FENCED_BLOCKS__ = [];
 
-  markdown = markdown.replace(
-    /(^`{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*$/gm,
-    (match) => {
-      const index = __MDCSS_FENCED_BLOCKS__.push(match) - 1;
-      return `${__MDCSS_FENCE_TOKEN_PREFIX__}${index}${__MDCSS_FENCE_TOKEN_SUFFIX__}`;
+  function __mdcssExtractFences(markdown) {
+    const lines = markdown.split("\n");
+    const out = [];
+    const openRe = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+    let i = 0;
+    while (i < lines.length) {
+      const open = lines[i].match(openRe);
+      if (!open || (open[1][0] === "`" && open[2].indexOf("`") !== -1)) {
+        out.push(lines[i]);
+        i += 1;
+        continue;
+      }
+      const marker = open[1][0];
+      const closeRe = new RegExp("^ {0,3}" + marker + "{" + open[1].length + ",}[ \t]*$");
+      let j = i + 1;
+      while (j < lines.length && !closeRe.test(lines[j])) {
+        j += 1;
+      }
+      const blockEnd = Math.min(j + 1, lines.length);
+      const block = lines.slice(i, blockEnd).join("\n");
+      const index = globalThis.__MDCSS_FENCED_BLOCKS__.push(block) - 1;
+      out.push(__MDCSS_FENCE_TOKEN_PREFIX__ + index + "@@");
+      i = blockEnd;
     }
+    return out.join("\n");
+  }
+  markdown = __mdcssExtractFences(markdown);
+  markdown = markdown.replace(/^([ ]{0,3}\|.*)$/gm, (line) =>
+    line.replace(/(\|[ \t]*)(\\+)(?=[ \t]*(?:\||$))/g, (m, left, run) => left + "@MDCSS_BS_" + run.length + "@")
   );
   markdown = markdown.replace(
     /(^|\n)([ \t]{0,3})table<(auto|zebra|nozebra)>:/gi,
     (_match, newline, indentText, mode) => `${newline}${indentText}Table@${mode.toLowerCase()}@:`
   );
+  const MDCSS_CAPTION_CONTROL_RE = /^(\d{1,4})(%|px)?(Lf|Rf|r|L|R)?(i|I|m|M)?(?:\((\d{1,3}),(\d{1,3})\))?$/;
+  const MDCSS_CAPTION_IMG_RE = /!\[((?:\\.|[^\]\\\n])*)\]\(((?:\\.|[^()\\\n]|\([^()\n]*\))*)\)/g;
+
+  function mdcssCaptionOfAlt(alt) {
+    const parts = alt.split("|");
+    if (parts.length < 2) return null;
+    const control = parts[0].trim();
+    if (control !== "") {
+      const match = control.match(MDCSS_CAPTION_CONTROL_RE);
+      if (!match || Number(match[1]) <= 0) return null;
+    }
+    const caption = (parts[1] || "").trim();
+    return caption || null;
+  }
+
+  function mdcssMapProse(line, rewrite) {
+    let out = "";
+    let index = 0;
+    while (index < line.length) {
+      let next = line.indexOf("`", index);
+      if (next < 0) next = line.length;
+      if (next > index) {
+        out += rewrite(line.slice(index, next));
+        index = next;
+        continue;
+      }
+      let end = index;
+      while (line[end] === "`") end += 1;
+      const ticks = line.slice(index, end);
+      const close = line.indexOf(ticks, end);
+      if (close < 0) {
+        out += line.slice(index);
+        break;
+      }
+      out += line.slice(index, close + ticks.length);
+      index = close + ticks.length;
+    }
+    return out;
+  }
+
+  markdown = markdown.replace(
+    /^([ \t]{0,3}Table(?:@(?:auto|zebra|nozebra)@)?:)([ \t]*)(\S.*?)[ \t]*$/gim,
+    (_match, head, space, caption) =>
+    `${head}${space}<span class="mdcss-tablecap">${caption}</span>`
+  );
+
+  markdown = markdown
+    .split("\n")
+    .map((line) =>
+      mdcssMapProse(line, (prose) =>
+        prose.replace(MDCSS_CAPTION_IMG_RE, (match, alt) => {
+          const caption = mdcssCaptionOfAlt(alt);
+          return caption ?
+            `${match}<span class="mdcss-figcap">${caption}</span>` :
+            match;
+        })
+      )
+    )
+    .join("\n");
 
   function roman(num, prefix) {
     if (typeof num !== 'number' || num < 1 || num > 3999) {
@@ -306,25 +516,6 @@ ${markdown}
   function mergeColumnSpec(markdown) {
     let parts = markdown.split(columnRegex);
     let specIndex = {};
-    const partLine = [];
-    let lineCounter = 1;
-    for (const part of parts) {
-      partLine.push(lineCounter);
-      lineCounter += columnRegex.test(part) ? 0 : (part.match(/\n/g) || []).length;
-    }
-    const preLedger = globalThis.__MDCSS_LINE_SHIFTS__.slice().sort((a, b) => a.o - b.o);
-
-    function preOrigLine(cur) {
-      let cum = 0;
-      for (const s of preLedger) {
-        if (cur < s.o + cum) {
-          return cur - cum;
-        }
-        cum += s.d;
-      }
-      return cur - cum;
-    }
-    const pendingShifts = [];
     for (let i = 0; i < parts.length; i++) {
       if (!columnRegex.test(parts[i])) {
         continue;
@@ -384,26 +575,10 @@ ${markdown}
               outerDiv = `</div>`;
             }
             parts[i] = `</div></div>`;
-            for (const {
-                index
-              }
-              of orderedSpecs) {
-              pendingShifts.push({
-                line: partLine[index],
-                d: (parts[index].match(/\n/g) || []).length + 2
-              });
-            }
-            pendingShifts.push({
-              line: partLine[i],
-              d: 2
-            });
             specIndex = {};
           }
           break;
       }
-    }
-    for (const s of pendingShifts) {
-      globalThis.__mdcssRecordShift(preOrigLine(s.line) + 1, s.d);
     }
     return parts.join("\n");
   }
@@ -416,11 +591,33 @@ ${markdown}
     }
     return __MDCSS_FENCED_BLOCKS__[index];
   });
+  globalThis.__mdcssRecordLineDiff(globalThis.__MDCSS_ORIGINAL_MARKDOWN__, markdown);
   return markdown;
 }
 
 export function mdcssPost(html) {
   const MDCSS_CONTROL_RE = /^(\d{1,4})(%|px)?(Lf|Rf|r|L|R)?(i|I|m|M)?(?:\((\d{1,3}),(\d{1,3})\))?$/;
+  const MDCSS_LAYOUT_PROPS = {
+    "": {
+      "display": "block !important",
+      "margin": "0 auto !important"
+    },
+    "r": {
+      "display": "inline-block !important",
+      "margin": "0 !important",
+      "vertical-align": "middle !important"
+    },
+    "L": {
+      "display": "block !important",
+      "margin-left": "0 !important",
+      "margin-right": "auto !important"
+    },
+    "R": {
+      "display": "block !important",
+      "margin-left": "auto !important",
+      "margin-right": "0 !important"
+    }
+  };
   const MDCSS_LAYOUT_CLASS = {
     r: 'mdcss-row',
     L: 'mdcss-left',
@@ -434,6 +631,36 @@ export function mdcssPost(html) {
     m: 'mdcss-mix',
     M: 'mdcss-matte',
   };
+
+  const __mdcssCaptionStore = [];
+
+  function __mdcssCaptionEnd(source, from) {
+    const tags = /<\/?span\b[^>]*>/gi;
+    tags.lastIndex = from;
+    let depth = 1;
+    let match;
+    while ((match = tags.exec(source))) {
+      depth += match[0][1] === '/' ? -1 : 1;
+      if (depth === 0) return match.index;
+    }
+    return -1;
+  }
+
+  function __mdcssStashCaptions(source) {
+    const open = /<span\b[^>]*\bclass="[^"]*\bmdcss-(?:figcap|tablecap)\b[^"]*"[^>]*>/gi;
+    let out = '';
+    let last = 0;
+    let match;
+    while ((match = open.exec(source))) {
+      const end = __mdcssCaptionEnd(source, open.lastIndex);
+      if (end < 0) break;
+      const index = __mdcssCaptionStore.push(source.slice(open.lastIndex, end)) - 1;
+      out += `${source.slice(last, match.index)}@@MDCSS_CAP_${index}@@`;
+      last = end + '</span>'.length;
+      open.lastIndex = last;
+    }
+    return out + source.slice(last);
+  }
 
   function parseImageAlt(alt) {
     if (!alt) return null;
@@ -497,23 +724,13 @@ export function mdcssPost(html) {
     styleMap.delete('margin-right');
     styleMap.delete('vertical-align');
 
-    if (layout === 'r') {
-      styleMap.set('display', 'inline-block !important');
-      styleMap.set('margin', '0 !important');
-      styleMap.set('vertical-align', 'middle !important');
-    } else if (layout === 'L') {
-      styleMap.set('display', 'block !important');
-      styleMap.set('margin-left', '0 !important');
-      styleMap.set('margin-right', 'auto !important');
-    } else if (layout === 'R') {
-      styleMap.set('display', 'block !important');
-      styleMap.set('margin-left', 'auto !important');
-      styleMap.set('margin-right', '0 !important');
-    } else if (layout === 'Lf' || layout === 'Rf') {
+    if (layout === 'Lf' || layout === 'Rf') {
       styleMap.delete('display');
     } else {
-      styleMap.set('display', 'block !important');
-      styleMap.set('margin', '0 auto !important');
+      const props = MDCSS_LAYOUT_PROPS[layout || ''];
+      for (const key of Object.keys(props)) {
+        styleMap.set(key, props[key]);
+      }
     }
 
     return Array.from(styleMap.entries())
@@ -539,6 +756,8 @@ export function mdcssPost(html) {
     }
     return appendAttr(imgTag, `class="${newClasses.join(' ')}"`);
   }
+
+  html = __mdcssStashCaptions(html);
 
   html = html.replace(/<img\b[^>]*>/gi, (imgTag) => {
     const altMatch = imgTag.match(/\balt=(['"])(.*?)\1/i);
@@ -645,6 +864,9 @@ export function mdcssPost(html) {
   html = html.replace(rm_th_regex, '');
   const esc_th_regex = /<th([^>]*)>\\\\<\/th>/g;
   html = html.replace(esc_th_regex, '<th$1>\\</th>');
+  html = html.replace(/<t[dh][^>]*>@MDCSS_BS_1@<\/t[dh]>/g, '');
+  html = html.replace(/<t([dh])([^>]*)>@MDCSS_BS_(\d+)@<\/t\1>/g, (m, tag, attrs, n) => `<t${tag}${attrs}>${'\\'.repeat(Number(n) - 1)}</t${tag}>`);
+  html = html.replace(/@MDCSS_BS_(\d+)@/g, (m, n) => '\\'.repeat(Math.ceil(Number(n) / 2)));
 
   const MDCSS_ZEBRA_TAG_RE = /(<p[^>]*>)\s*Table@(auto|zebra|nozebra)@:\s*(.*?)<\/p>\s*(<div(?![^>]*data-mdcss-col)[^>]*>\s*<table[\s\S]*?<\/table>\s*<\/div>|<table[\s\S]*?<\/table>)/g;
 
@@ -717,7 +939,12 @@ export function mdcssPost(html) {
   html = html.replace(
     /<p[^>]*>\s*Table:\s*(.*?)<\/p>\s*(<div(?![^>]*data-mdcss-col)[^>]*>\s*<table[\s\S]*?<\/table>\s*<\/div>|<table[\s\S]*?<\/table>)/gi,
     (_match, caption, tableHtml) => {
-      caption = caption.trim();
+      caption = caption
+        .replace(/@@MDCSS_CAP_(\d+)@@/g, (token, indexText) => {
+          const content = __mdcssCaptionStore[Number(indexText)];
+          return content === undefined ? token : content;
+        })
+        .trim();
       if (!caption) return _match;
       const prefix = caption.startsWith('.') ? '表@TABLE_COUNT_PLACEHOLDER@:\t' : '';
       const displayCaption = caption.startsWith('.') ? caption.slice(1) : caption;
@@ -751,10 +978,11 @@ ${tableHtml}
   }
 
   html = html.replace(
-    /<img[^\>]*>/g,
-    (imgTag) => {
+    /(<img[^\>]*>)(?:[ \t]*@@MDCSS_CAP_(\d+)@@)?/g,
+    (_match, imgTag, captionIndex) => {
       const capMatch = imgTag.match(/\bdata-mdcss-cap="([^"]*)"/i);
-      const caption = capMatch ? capMatch[1] : '';
+      const stored = captionIndex !== undefined ? __mdcssCaptionStore[Number(captionIndex)] : undefined;
+      const caption = stored !== undefined ? stored : (capMatch ? capMatch[1] : '');
       const isRow = hasMdcssClass(imgTag, 'mdcss-row');
       if (!caption && !isRow) return imgTag;
       imgTag = imgTag.replace(/\s+data-mdcss-cap="[^"]*"/, '');
@@ -874,6 +1102,11 @@ ${generalCaption || ''}
   html = html.replace(/@COUNT_PLACEHOLDER@/g, (match) => {
     cnt += 1;
     return cnt;
+  });
+
+  html = html.replace(/@@MDCSS_CAP_(\d+)@@/g, (match, indexText) => {
+    const content = __mdcssCaptionStore[Number(indexText)];
+    return content === undefined ? match : `<span class="mdcss-figcap">${content}</span>`;
   });
   html = html.replace(
     /<div data-mdcss-cols="([^"]*)">/g,

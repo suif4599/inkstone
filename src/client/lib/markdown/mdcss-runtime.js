@@ -289,18 +289,4 @@
     }
   }
 
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {
-      KNEE: KNEE,
-      FRINGE: FRINGE,
-      FG_TOL: FG_TOL,
-      INVERT_BOUNDS: INVERT_BOUNDS,
-      MATTE_BOUNDS: MATTE_BOUNDS,
-      darkTable: darkTable,
-      brightTable: brightTable,
-      lut: lut,
-      localBackground: localBackground,
-      transformPixels: transformPixels,
-    };
-  }
 })();
